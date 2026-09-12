@@ -1,11 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import type { AppConfig } from './config';
 import { AppError, gone, notFound, upstreamError } from './errors';
-import type { JellyfinClient, PlaybackNegotiation } from './jellyfin';
+import type { JellyfinClient } from './jellyfin';
+import { MediaCache, withAbort } from './media-cache';
 import { rewriteManifest } from './manifest';
 import type { LinkRecord, LinkStore } from './store';
 
-const MAX_RESOURCES_PER_SESSION = 4096;
+const MAX_RESOURCES_PER_SESSION = 32768;
+const MAX_RESOURCE_URL_BYTES = 16 * 1024 * 1024;
+const MAX_MANIFEST_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_PLAYLIST_BYTES = 5 * 1024 * 1024;
 
 export interface SessionResource {
@@ -32,6 +35,8 @@ export interface PlaybackSession {
   resources: Map<string, SessionResource>;
   resourcesByUrl: Map<string, SessionResource>;
   counter: number;
+  resourceBytes: number;
+  expiryTimer: NodeJS.Timeout;
   inflight: number;
   aborters: Set<AbortController>;
 }
@@ -43,18 +48,44 @@ export interface BinaryResult {
   release(): void;
 }
 
+interface PendingSession {
+  controller: AbortController;
+  promise: Promise<PlaybackSession>;
+  users: number;
+  settled: boolean;
+}
+interface PendingManifest {
+  controller: AbortController;
+  promise: Promise<string>;
+  users: number;
+  settled: boolean;
+}
+
 export class PlaybackManager {
   private readonly config: AppConfig;
   private readonly store: LinkStore;
   private readonly jellyfin: JellyfinClient;
   private readonly publicBasePath: string;
   private readonly sessions = new Map<string, PlaybackSession>();
+  private readonly sessionsByLink = new Map<string, PlaybackSession>();
+  private readonly pendingByLink = new Map<string, PendingSession>();
+  private readonly pendingManifests = new Map<string, PendingManifest>();
+  private readonly manifestCache = new Map<string, { text: string; owner: string; expiresAt: number }>();
+  private manifestCacheBytes = 0;
+  private readonly mediaCache: MediaCache;
+  private readonly stopping = new Set<Promise<void>>();
+  private closed = false;
   private sweeper: NodeJS.Timeout | null = null;
 
   constructor(config: AppConfig, store: LinkStore, jellyfin: JellyfinClient) {
     this.config = config;
     this.store = store;
     this.jellyfin = jellyfin;
+    this.mediaCache = new MediaCache({
+      maxBytes: config.mediaCacheBytes, maxResourceBytes: config.maxMediaResourceBytes,
+      maxFetches: config.maxUpstreamTransfers, timeoutMs: config.upstreamTimeoutMs,
+      ttlMs: config.mediaCacheTtlMs,
+    });
     // When PUBLIC_BASE_URL includes a sub-path (reverse proxy mount point), the
     // rewritten manifest URIs must carry it too or players resolve to the wrong
     // root. The proxy is expected to strip the prefix before our routes.
@@ -87,13 +118,48 @@ export class PlaybackManager {
     return link;
   }
 
-  async createSession(link: LinkRecord, token: string): Promise<PlaybackSession> {
-    if (this.sessions.size >= this.config.maxActiveSessions) {
+  async createSession(link: LinkRecord, token: string, signal?: AbortSignal): Promise<PlaybackSession> {
+    signal?.throwIfAborted();
+    if (this.closed) throw new AppError(503, 'shutting_down', 'Server is shutting down');
+    this.resolveLink(token);
+    const existing = this.sessionsByLink.get(link.id);
+    if (existing && this.sessions.has(existing.id) && Date.now() < existing.expiresAt) {
+      existing.lastAccess = Date.now();
+      return existing;
+    }
+    let pending = this.pendingByLink.get(link.id);
+    if (!pending) {
       this.purgeIdle();
+      // Reserve before the first await. Pending negotiations consume capacity too.
+      if (this.sessions.size + this.pendingByLink.size >= this.config.maxActiveSessions) {
+        throw new AppError(503, 'too_many_sessions', 'Too many active playback sessions, try again later');
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.max(1, Math.min(
+        this.config.upstreamTimeoutMs, Date.parse(link.expiresAt) - Date.now(),
+      )));
+      timer.unref();
+      pending = { controller, promise: undefined!, users: 0, settled: false };
+      const current = pending;
+      this.pendingByLink.set(link.id, current);
+      current.promise = Promise.resolve().then(() => this.negotiateSession(link, token, controller.signal)).finally(() => {
+        current.settled = true;
+        clearTimeout(timer);
+        if (this.pendingByLink.get(link.id) === current) this.pendingByLink.delete(link.id);
+      });
     }
-    if (this.sessions.size >= this.config.maxActiveSessions) {
-      throw new AppError(503, 'too_many_sessions', 'Too many active playback sessions, try again later');
+    if (pending.controller.signal.aborted) throw new AppError(503, 'playback_restarting', 'Playback request is restarting, try again later');
+    pending.users += 1;
+    try {
+      return await withAbort(pending.promise, signal);
+    } finally {
+      pending.users -= 1;
+      if (pending.users === 0 && !pending.settled) pending.controller.abort();
     }
+  }
+
+  private async negotiateSession(link: LinkRecord, token: string, signal: AbortSignal): Promise<PlaybackSession> {
+    signal.throwIfAborted();
     const deviceId = randomBytes(16).toString('hex');
     const negotiation = await this.jellyfin.negotiatePlayback({
       itemId: link.item.id,
@@ -103,7 +169,16 @@ export class PlaybackManager {
       preset: link.preset,
       startSeconds: link.startSeconds,
       deviceId,
+      signal,
     });
+    try {
+      signal.throwIfAborted();
+      if (this.closed) throw new AppError(503, 'shutting_down', 'Server is shutting down');
+      this.resolveLink(token);
+    } catch (error) {
+      await this.stopEncoding(negotiation.deviceId, negotiation.playSessionId);
+      throw error;
+    }
     const now = Date.now();
     const session: PlaybackSession = {
       id: randomBytes(12).toString('base64url'),
@@ -120,10 +195,15 @@ export class PlaybackManager {
       resources: new Map(),
       resourcesByUrl: new Map(),
       counter: 0,
+      resourceBytes: 0,
+      expiryTimer: undefined!,
       inflight: 0,
       aborters: new Set(),
     };
+    session.expiryTimer = setTimeout(() => this.dropSession(session), Math.max(1, session.expiresAt - now));
+    session.expiryTimer.unref();
     this.sessions.set(session.id, session);
+    this.sessionsByLink.set(link.id, session);
     return session;
   }
 
@@ -146,7 +226,8 @@ export class PlaybackManager {
     if (existing) {
       return this.resourcePath(session, existing);
     }
-    if (session.resources.size >= MAX_RESOURCES_PER_SESSION) {
+    const urlBytes = Buffer.byteLength(upstreamUrl, 'utf8');
+    if (session.resources.size >= MAX_RESOURCES_PER_SESSION || session.resourceBytes + urlBytes > MAX_RESOURCE_URL_BYTES) {
       throw new AppError(503, 'session_resource_limit', 'Playback session referenced too many resources');
     }
     const id = randomBytes(9).toString('base64url');
@@ -162,6 +243,7 @@ export class PlaybackManager {
     session.resources.set(id, resource);
     session.resourcesByUrl.set(upstreamUrl, resource);
     session.counter += 1;
+    session.resourceBytes += urlBytes;
     return this.resourcePath(session, resource);
   }
 
@@ -169,82 +251,140 @@ export class PlaybackManager {
     return `${this.publicBasePath}/s/${encodeURIComponent(session.token)}/p/${session.id}/${resource.id}/${encodeURIComponent(resource.filename)}${resource.search}`;
   }
 
-  async fetchManifest(session: PlaybackSession, upstreamUrl: string): Promise<string> {
-    const response = await this.jellyfin.fetchResource(upstreamUrl, {
-      deviceId: session.deviceId,
-      signal: AbortSignal.timeout(this.config.upstreamTimeoutMs),
-    });
-    if (!response.ok) {
-      throw upstreamError('Jellyfin could not provide the playlist');
-    }
-    const declaredLength = Number(response.headers.get('content-length') ?? '0');
-    if (declaredLength > MAX_PLAYLIST_BYTES) {
-      throw upstreamError('The upstream playlist is unexpectedly large');
-    }
-    const text = await response.text();
-    if (text.length > MAX_PLAYLIST_BYTES) {
-      throw upstreamError('The upstream playlist is unexpectedly large');
-    }
-    return rewriteManifest(text, {
-      jellyfin: this.config.jellyfin!,
-      itemId: session.itemId,
-      manifestUrl: upstreamUrl,
-      startTicks: session.startTicks,
-      mapResource: (url, filename) => this.registerResource(session, url, filename),
-    });
-  }
-
-  async openBinary(
-    session: PlaybackSession,
-    upstreamUrl: string,
-    options: { range?: string; signal?: AbortSignal },
-  ): Promise<BinaryResult> {
+  private operation(session: PlaybackSession, timeoutMs: number) {
+    if (!this.sessions.has(session.id)) throw gone('session_ended', 'Playback session ended');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.config.upstreamTimeoutMs);
-    const signals: AbortSignal[] = [controller.signal];
-    if (options.signal) signals.push(options.signal);
-    const signal = AbortSignal.any(signals);
-
+    const timer = setTimeout(() => controller.abort(), Math.max(1, Math.min(timeoutMs, session.expiresAt - Date.now())));
+    timer.unref();
     session.inflight += 1;
     session.aborters.add(controller);
-
     let released = false;
     const release = () => {
       if (released) return;
       released = true;
-      session.inflight = Math.max(0, session.inflight - 1);
+      clearTimeout(timer);
+      session.inflight -= 1;
       session.aborters.delete(controller);
+      session.lastAccess = Date.now();
     };
+    controller.signal.addEventListener('abort', release, { once: true });
+    return { controller, release };
+  }
 
-    try {
-      const headers: Record<string, string> = {};
-      if (options.range) headers.Range = options.range;
-      const response = await this.jellyfin.fetchResource(upstreamUrl, {
-        headers,
-        signal,
-        deviceId: session.deviceId,
-      });
-      clearTimeout(timer);
-      if (!response.ok && response.status !== 206 && response.status !== 416) {
-        release();
-        throw upstreamError('Jellyfin could not provide the requested resource');
+  async fetchManifest(session: PlaybackSession, upstreamUrl: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
+    if (!this.sessions.has(session.id)) throw gone('session_ended', 'Playback session ended');
+    const key = `${session.id}:${upstreamUrl}`;
+    const cached = this.manifestCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.text;
+    let pending = this.pendingManifests.get(key);
+    if (!pending) {
+      if (this.pendingManifests.size >= this.config.maxUpstreamTransfers) {
+        throw new AppError(503, 'media_capacity', 'Playlist transfer capacity reached, try again later');
       }
-      return {
-        status: response.status,
-        headers: response.headers,
-        body: response.body,
-        release,
-      };
+      const operation = this.operation(session, this.config.upstreamTimeoutMs);
+      pending = { controller: operation.controller, promise: undefined!, users: 0, settled: false };
+      const current = pending;
+      this.pendingManifests.set(key, current);
+      current.promise = Promise.resolve().then(async () => {
+        const response = await this.jellyfin.fetchResource(upstreamUrl, {
+          deviceId: session.deviceId, signal: current.controller.signal,
+        });
+        if (!response.ok || Number(response.headers.get('content-length')) > MAX_PLAYLIST_BYTES) {
+          await response.body?.cancel();
+          throw upstreamError('Jellyfin returned an invalid or oversized playlist');
+        }
+        const reader = response.body?.getReader();
+        let bytes = 0;
+        const buffer = Buffer.allocUnsafe(MAX_PLAYLIST_BYTES);
+        try {
+          if (reader) while (true) {
+            const { done, value } = await withAbort(reader.read(), current.controller.signal);
+            if (done) break;
+            if (bytes + value.byteLength > MAX_PLAYLIST_BYTES) throw upstreamError('The upstream playlist is unexpectedly large');
+            buffer.set(value, bytes);
+            bytes += value.byteLength;
+          }
+        } catch (error) {
+          current.controller.abort();
+          await reader?.cancel().catch(() => {});
+          throw error;
+        } finally {
+          reader?.releaseLock();
+        }
+        current.controller.signal.throwIfAborted();
+        const text = rewriteManifest(buffer.subarray(0, bytes).toString('utf8'), {
+          jellyfin: this.config.jellyfin!, itemId: session.itemId, manifestUrl: upstreamUrl,
+          startTicks: session.startTicks,
+          mapResource: (url, filename) => this.registerResource(session, url, filename),
+        });
+        this.cacheManifest(key, session.id, text);
+        return text;
+      }).catch((error: unknown) => {
+        if (error instanceof AppError) throw error;
+        throw upstreamError('Jellyfin could not provide the playlist');
+      }).finally(() => {
+        current.settled = true;
+        operation.release();
+        this.pendingManifests.delete(key);
+      });
+    }
+    if (pending.controller.signal.aborted) throw new AppError(503, 'playback_restarting', 'Playback request is restarting, try again later');
+    pending.users += 1;
+    try {
+      return await withAbort(pending.promise, signal);
+    } finally {
+      pending.users -= 1;
+      if (pending.users === 0 && !pending.settled) pending.controller.abort();
+    }
+  }
+
+  private cacheManifest(key: string, owner: string, text: string): void {
+    const charge = text.length * 2;
+    const old = this.manifestCache.get(key);
+    if (old) { this.manifestCacheBytes -= old.text.length * 2; this.manifestCache.delete(key); }
+    if (charge > MAX_MANIFEST_CACHE_BYTES) return;
+    for (const [id, entry] of this.manifestCache) {
+      if (entry.expiresAt <= Date.now() || this.manifestCacheBytes + charge > MAX_MANIFEST_CACHE_BYTES || this.manifestCache.size >= 32) {
+        this.manifestCache.delete(id);
+        this.manifestCacheBytes -= entry.text.length * 2;
+      }
+    }
+    this.manifestCache.set(key, { text, owner, expiresAt: Date.now() + 1000 });
+    this.manifestCacheBytes += charge;
+  }
+
+  async openBinary(session: PlaybackSession, upstreamUrl: string, options: { range?: string; signal?: AbortSignal }): Promise<BinaryResult> {
+    const operation = this.operation(session, this.config.mediaRequestTimeoutMs);
+    const signal = options.signal ? AbortSignal.any([operation.controller.signal, options.signal]) : operation.controller.signal;
+    try {
+      const binary = await this.mediaCache.open(session.id, JSON.stringify([session.id, upstreamUrl, options.range ?? '']), (upstreamSignal) => {
+        const headers: Record<string, string> = {};
+        if (options.range) headers.Range = options.range;
+        return this.jellyfin.fetchResource(upstreamUrl, { headers, signal: upstreamSignal, deviceId: session.deviceId });
+      }, signal);
+      return { ...binary, release() { binary.release(); operation.release(); } };
     } catch (error) {
-      clearTimeout(timer);
-      release();
-      if (error instanceof Error && error.name === 'AppError') throw error;
+      operation.release();
+      if (error instanceof AppError) throw error;
       throw upstreamError('Jellyfin could not provide the requested resource');
     }
   }
 
+  private stopEncoding(deviceId: string, playSessionId: string): Promise<void> {
+    const stopping = this.jellyfin.stopEncoding(deviceId, playSessionId);
+    this.stopping.add(stopping);
+    void stopping.finally(() => this.stopping.delete(stopping));
+    return stopping;
+  }
+
   dropSession(session: PlaybackSession): void {
     if (!this.sessions.has(session.id)) return;
+    clearTimeout(session.expiryTimer);
+    this.mediaCache.invalidate(session.id);
+    for (const [key, entry] of this.manifestCache) {
+      if (entry.owner === session.id) { this.manifestCache.delete(key); this.manifestCacheBytes -= entry.text.length * 2; }
+    }
     for (const aborter of session.aborters) {
       try {
         aborter.abort();
@@ -253,11 +393,18 @@ export class PlaybackManager {
       }
     }
     session.aborters.clear();
+    session.resources.clear();
+    session.resourcesByUrl.clear();
+    session.resourceBytes = 0;
     this.sessions.delete(session.id);
-    void this.jellyfin.stopEncoding(session.deviceId, session.playSessionId);
+    if (this.sessionsByLink.get(session.linkId) === session) {
+      this.sessionsByLink.delete(session.linkId);
+    }
+    void this.stopEncoding(session.deviceId, session.playSessionId);
   }
 
   closeSessionsForLink(linkId: string): void {
+    this.pendingByLink.get(linkId)?.controller.abort();
     for (const session of [...this.sessions.values()]) {
       if (session.linkId === linkId) {
         this.dropSession(session);
@@ -268,10 +415,9 @@ export class PlaybackManager {
   purgeIdle(): void {
     const now = Date.now();
     for (const session of [...this.sessions.values()]) {
-      if (session.inflight > 0) continue;
       const idle = now - session.lastAccess > this.config.sessionIdleTtlMs;
       const expired = now > session.expiresAt;
-      if (idle || expired) {
+      if (expired || (idle && session.inflight === 0)) {
         this.dropSession(session);
       }
     }
@@ -297,10 +443,15 @@ export class PlaybackManager {
   }
 
   async shutdown(): Promise<void> {
+    this.closed = true;
     this.stopSweeper();
+    for (const pending of this.pendingByLink.values()) pending.controller.abort();
     for (const session of [...this.sessions.values()]) {
       this.dropSession(session);
     }
+    await Promise.allSettled([...this.pendingByLink.values()].map((p) => p.promise));
+    await Promise.allSettled([...this.pendingManifests.values()].map((p) => p.promise));
+    await Promise.allSettled([...this.stopping]);
   }
 }
 

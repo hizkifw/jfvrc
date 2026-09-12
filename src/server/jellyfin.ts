@@ -138,6 +138,8 @@ export interface NegotiateInput {
   preset: Preset;
   startSeconds: number;
   deviceId: string;
+  /** Optional caller cancellation, combined with the upstream deadline. */
+  signal?: AbortSignal;
 }
 
 export interface UpstreamFetchOptions {
@@ -145,6 +147,73 @@ export interface UpstreamFetchOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   deviceId?: string;
+}
+
+/** Hard ceiling for JSON negotiation/metadata bodies, enforced while streaming. */
+const MAX_JSON_BODY_BYTES = 5 * 1024 * 1024;
+
+/** Discard a response we are not going to consume. Never throws. */
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cleanup is best-effort; the response is being discarded regardless.
+  }
+}
+
+/**
+ * Read and parse a JSON body while enforcing a byte ceiling on the stream.
+ * The limit is checked per chunk so an oversized upstream body is rejected
+ * without buffering the whole thing (or trusting a Content-Length header).
+ */
+async function readJsonBody<T>(response: Response, malformedMessage: string): Promise<T> {
+  const body = response.body;
+  if (!body) {
+    throw upstreamError(malformedMessage);
+  }
+  if (Number(response.headers.get('content-length')) > MAX_JSON_BODY_BYTES) {
+    await cancelResponseBody(response);
+    throw upstreamError(malformedMessage);
+  }
+  const reader = body.getReader();
+  let bytes = Buffer.allocUnsafe(64 * 1024);
+  let received = 0;
+  try {
+    for (;;) {
+      let result;
+      try {
+        result = await reader.read();
+      } catch {
+        throw upstreamError(malformedMessage);
+      }
+      if (result.done) break;
+      const chunk = result.value;
+      if (!chunk) continue;
+      const nextSize = received + chunk.byteLength;
+      if (nextSize > MAX_JSON_BODY_BYTES) {
+        throw upstreamError(malformedMessage);
+      }
+      if (nextSize > bytes.length) {
+        const expanded = Buffer.allocUnsafe(Math.min(MAX_JSON_BODY_BYTES, Math.max(nextSize, bytes.length * 2)));
+        bytes.copy(expanded, 0, 0, received);
+        bytes = expanded;
+      }
+      bytes.set(chunk, received);
+      received = nextSize;
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore
+    }
+    reader.releaseLock();
+  }
+  try {
+    return JSON.parse(bytes.subarray(0, received).toString('utf8')) as T;
+  } catch {
+    throw upstreamError(malformedMessage);
+  }
 }
 
 function pick<T>(obj: Record<string, unknown> | undefined, ...keys: string[]): T | undefined {
@@ -236,6 +305,21 @@ export class JellyfinClient {
     return `MediaBrowser ${parts.join(', ')}`;
   }
 
+  /**
+   * Create an AbortSignal that fires after upstreamTimeoutMs and, when a
+   * caller signal is supplied, aborts as soon as either fires. The deadline
+   * must stay armed until the response body has been fully consumed.
+   */
+  private deadline(callerSignal?: AbortSignal): { signal: AbortSignal; dispose: () => void } {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.config.upstreamTimeoutMs);
+    timer.unref?.();
+    const signal = callerSignal
+      ? AbortSignal.any([controller.signal, callerSignal])
+      : controller.signal;
+    return { signal, dispose: () => clearTimeout(timer) };
+  }
+
   private async request(
     url: string,
     init: RequestInit,
@@ -250,46 +334,50 @@ export class JellyfinClient {
     headers.set('Accept', 'application/json, */*');
     const response = await this.fetchImpl(url, { ...init, headers, redirect: 'manual' });
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get('location');
-      if (!location) {
-        throw upstreamError('Upstream returned a redirect without a location');
-      }
-      let resolved: URL;
       try {
-        resolved = new URL(location, url);
-      } catch {
-        throw upstreamError('Upstream returned an invalid redirect location');
+        const location = response.headers.get('location');
+        if (!location) {
+          throw upstreamError('Upstream returned a redirect without a location');
+        }
+        let resolved: URL;
+        try {
+          resolved = new URL(location, url);
+        } catch {
+          throw upstreamError('Upstream returned an invalid redirect location');
+        }
+        // Re-validate credentials cannot escape to another origin.
+        validateUpstreamUrl(resolved.toString(), this.jellyfin);
+        await cancelResponseBody(response);
+        return await this.request(resolved.toString(), init, deviceId, redirectDepth + 1);
+      } catch (error) {
+        // Every rejected redirect path must release the response stream.
+        await cancelResponseBody(response);
+        throw error;
       }
-      // Re-validate credentials cannot escape to another origin.
-      validateUpstreamUrl(resolved.toString(), this.jellyfin);
-      try {
-        await response.body?.cancel();
-      } catch {
-        // ignore
-      }
-      return this.request(resolved.toString(), init, deviceId, redirectDepth + 1);
     }
     return response;
   }
 
   private async getJson<T>(url: string, deviceId?: string): Promise<T> {
-    let response: Response;
+    const { signal, dispose } = this.deadline();
     try {
-      response = await this.request(url, { method: 'GET' }, deviceId);
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AppError') throw error;
-      throw upstreamError();
-    }
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw notFound('item_not_found', 'The requested item was not found on Jellyfin');
+      let response: Response;
+      try {
+        response = await this.request(url, { method: 'GET', signal }, deviceId);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AppError') throw error;
+        throw upstreamError();
       }
-      throw upstreamError();
-    }
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw upstreamError('Jellyfin returned a malformed response');
+      if (!response.ok) {
+        await cancelResponseBody(response);
+        if (response.status === 404) {
+          throw notFound('item_not_found', 'The requested item was not found on Jellyfin');
+        }
+        throw upstreamError();
+      }
+      return await readJsonBody<T>(response, 'Jellyfin returned a malformed response');
+    } finally {
+      dispose();
     }
   }
 
@@ -351,32 +439,39 @@ export class JellyfinClient {
       DeviceProfile: buildDeviceProfile(input.preset),
     };
 
-    let response: Response;
-    try {
-      response = await this.request(
-        url,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        },
-        input.deviceId,
-      );
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AppError') throw error;
-      throw upstreamError();
-    }
-    if (response.status === 404) {
-      throw notFound('item_not_found', 'The requested item was not found on Jellyfin');
-    }
-    if (!response.ok) {
-      throw upstreamError();
-    }
+    const { signal, dispose } = this.deadline(input.signal);
     let raw: Record<string, unknown>;
     try {
-      raw = (await response.json()) as Record<string, unknown>;
-    } catch {
-      throw upstreamError('Jellyfin returned a malformed playback response');
+      let response: Response;
+      try {
+        response = await this.request(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal,
+          },
+          input.deviceId,
+        );
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AppError') throw error;
+        throw upstreamError();
+      }
+      if (response.status === 404) {
+        await cancelResponseBody(response);
+        throw notFound('item_not_found', 'The requested item was not found on Jellyfin');
+      }
+      if (!response.ok) {
+        await cancelResponseBody(response);
+        throw upstreamError();
+      }
+      raw = await readJsonBody<Record<string, unknown>>(
+        response,
+        'Jellyfin returned a malformed playback response',
+      );
+    } finally {
+      dispose();
     }
     const errorCode = pick<string>(raw, 'ErrorCode', 'errorCode');
     if (errorCode && errorCode !== 'None') {
@@ -501,10 +596,15 @@ export class JellyfinClient {
     if (!deviceId || !playSessionId) return;
     const params = new URLSearchParams({ deviceId, playSessionId });
     const url = apiUrl(this.jellyfin, `/Videos/ActiveEncodings?${params.toString()}`);
+    const { signal, dispose } = this.deadline();
+    let response: Response | undefined;
     try {
-      await this.request(url, { method: 'DELETE' }, deviceId);
+      response = await this.request(url, { method: 'DELETE', signal }, deviceId);
     } catch {
       // cleanup is best-effort and must never crash the service
+    } finally {
+      if (response) await cancelResponseBody(response);
+      dispose();
     }
   }
 }

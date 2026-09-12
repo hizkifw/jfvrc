@@ -24,6 +24,12 @@ export interface AppConfig {
   linkDefaultExpiryHours: number;
   linkMaxExpiryHours: number;
   upstreamTimeoutMs: number;
+  maxMediaRequests: number;
+  maxUpstreamTransfers: number;
+  mediaRequestTimeoutMs: number;
+  mediaCacheBytes: number;
+  maxMediaResourceBytes: number;
+  mediaCacheTtlMs: number;
 }
 
 const intFromEnv = (def: number) =>
@@ -47,6 +53,12 @@ const envSchema = z.object({
   LINK_DEFAULT_EXPIRY_HOURS: intFromEnv(24),
   LINK_MAX_EXPIRY_HOURS: intFromEnv(168),
   UPSTREAM_TIMEOUT_SECONDS: intFromEnv(30),
+  MAX_MEDIA_REQUESTS: intFromEnv(512),
+  MAX_UPSTREAM_TRANSFERS: intFromEnv(8),
+  MEDIA_REQUEST_TIMEOUT_SECONDS: intFromEnv(120),
+  MEDIA_CACHE_MB: intFromEnv(128),
+  MAX_MEDIA_RESOURCE_MB: intFromEnv(16),
+  MEDIA_CACHE_TTL_SECONDS: intFromEnv(120),
 });
 
 export class ConfigError extends Error {
@@ -130,6 +142,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError('LINK_DEFAULT_EXPIRY_HOURS must not exceed LINK_MAX_EXPIRY_HOURS');
   }
 
+  if (e.MEDIA_CACHE_MB < e.MAX_MEDIA_RESOURCE_MB) {
+    throw new ConfigError('MEDIA_CACHE_MB must be at least MAX_MEDIA_RESOURCE_MB');
+  }
+
   return {
     jellyfin,
     configured: jellyfin !== null,
@@ -144,5 +160,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     linkDefaultExpiryHours: e.LINK_DEFAULT_EXPIRY_HOURS,
     linkMaxExpiryHours: e.LINK_MAX_EXPIRY_HOURS,
     upstreamTimeoutMs: e.UPSTREAM_TIMEOUT_SECONDS * 1000,
+    maxMediaRequests: e.MAX_MEDIA_REQUESTS,
+    maxUpstreamTransfers: e.MAX_UPSTREAM_TRANSFERS,
+    mediaRequestTimeoutMs: e.MEDIA_REQUEST_TIMEOUT_SECONDS * 1000,
+    mediaCacheBytes: e.MEDIA_CACHE_MB * 1024 * 1024,
+    maxMediaResourceBytes: e.MAX_MEDIA_RESOURCE_MB * 1024 * 1024,
+    mediaCacheTtlMs: e.MEDIA_CACHE_TTL_SECONDS * 1000,
   };
 }

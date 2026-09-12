@@ -1,5 +1,22 @@
 # JFVRC independent integration verification
 
+## Group-viewing hardening follow-up (2026-09-12)
+
+The follow-up passes **113 tests across 16 files**, both TypeScript checks, and
+`npm run build`. New regression suites cover pending-session capacity,
+coalesced starts and cancellation, revocation during negotiation, active expiry,
+bounded API/playlist reads, media memory reservations (including cancellation
+races), slow readers, distinct Range responses, request admission, and shutdown.
+An HTTP test serves 40 same-link viewers with one upstream request per playlist
+and one per identical segment. This verifies request sharing, not a sustained
+bandwidth/RSS benchmark or real Jellyfin playback.
+
+Smaller upstream fixes and lifecycle tests were delegated through `opencode` to
+DeepSeek V4.1 Flash via Fireworks and reviewed during integration. No live
+Jellyfin or player tests were run in this follow-up. See README.md for the new
+limits and synchronized-viewing assumptions. The original report follows;
+its lifecycle and timeout notes below have been updated to reflect this change.
+
 Verifier: independent agent (DeepSeek V4.1 Flash via Fireworks). Date: 2026-09-12.
 Scope: integration verification of the finished backend + frontend against the
 architecture contract and the primary-source Jellyfin findings in
@@ -103,13 +120,13 @@ MediaSources, which the app does not consume there.)
   errors or manifests.
 - **Streaming**: HEAD on the entry link opens no session and starts no transcode;
   HEAD/OPTIONS on resources; CORS for players; `206` with `Content-Range` and
-  `416`; client disconnect aborts the upstream transfer (fetch resolves at
-  headers, the body stream errors — correct non-buffering behavior) and the
+  `416`; the last viewer disconnect aborts an unfinished upstream transfer (fetch
+  resolves at headers; delivery starts before the full segment is available) and the
   service stays healthy; missing segments surface as an upstream failure.
 - **Lifecycle**: expiry and revocation return `410` for existing session
   resources; forged token/session/resource combinations return `404`; links and
-  revocations persist across a store restart; concurrent consumers get
-  independent sessions; the global session cap returns `503`.
+  revocations persist across a store restart; same-link consumers share
+  a session; the global cap includes pending negotiations and returns `503`.
 - **API contract**: health without auth; bearer auth on all `/api`; resolve from
   id or details URL; episode mapping; library pagination with validation and
   totals; media-source/audio/subtitle/start/expiry validation; list/revoke;
@@ -123,10 +140,6 @@ MediaSources, which the app does not consume there.)
 
 ## Residual observations (low severity, not fixed)
 
-- After upstream headers arrive there is no idle read timeout on the binary
-  body; a client that stays connected to a stalled upstream could hold a
-  connection until it disconnects. `UPSTREAM_TIMEOUT_SECONDS` covers
-  connect/headers only.
 - A missing upstream segment is surfaced as `502 upstream_unavailable` rather
   than `404`; both are acceptable upstream-failure responses.
 - `fetchManifest` does not assert the upstream content type; a 200 HTML error

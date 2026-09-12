@@ -155,6 +155,8 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     bodyLimit: 1024 * 64,
     logController: new LogController({ disableRequestLogging: true }),
     exposeHeadRoutes: false,
+    // Playback is cancelled in preClose; also close sockets with incomplete requests.
+    forceCloseConnections: true,
   });
 
   const requireJellyfin = (): JellyfinClient => {
@@ -170,6 +172,32 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return playback;
   };
 
+  const mediaRequests = new Map<FastifyRequest, { controller: AbortController; finish(): void; abort(): void }>();
+  app.addHook('onRequest', async (request, reply) => {
+    const mediaPath = (request.raw.url ?? '').split('?', 1)[0]!;
+    if (request.method === 'GET' && mediaPath.startsWith('/s/')) {
+      if (mediaRequests.size >= config.maxMediaRequests) {
+        setMediaCors(reply);
+        setNoStore(reply);
+        reply.header('Retry-After', '2');
+        throw new AppError(503, 'media_capacity', 'Too many concurrent media requests, try again later');
+      }
+      const controller = new AbortController();
+      const abort = () => { controller.abort(); reply.raw.destroy(); };
+      const timer = setTimeout(abort, config.mediaRequestTimeoutMs);
+      timer.unref();
+      const finish = () => {
+        clearTimeout(timer);
+        controller.abort();
+        mediaRequests.delete(request);
+        reply.raw.removeListener('close', finish);
+      };
+      mediaRequests.set(request, { controller, finish, abort });
+      reply.raw.once('close', finish);
+    }
+  });
+  app.addHook('onResponse', async (request) => { mediaRequests.get(request)?.finish(); });
+
   app.addHook('onRequest', async (request) => {
     const path = (request.raw.url ?? '').split('?', 1)[0]!;
     if (!path.startsWith('/api/')) return;
@@ -184,6 +212,7 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
+      if (error.statusCode === 503) reply.header('Retry-After', '2');
       return reply.code(error.statusCode).send(toErrorBody(error));
     }
     if ((error as { statusCode?: number }).statusCode === 400) {
@@ -306,8 +335,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     setNoStore(reply);
     const manager = requirePlayback();
     const link = manager.resolveLink(token);
-    const session = await manager.createSession(link, token);
-    const text = await manager.fetchManifest(session, session.masterUrl);
+    const signal = mediaRequests.get(request)?.controller.signal;
+    const session = await manager.createSession(link, token, signal);
+    const text = await manager.fetchManifest(session, session.masterUrl, signal);
     reply.type(PLAYLIST_CONTENT_TYPE);
     return text;
   });
@@ -348,16 +378,15 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       return null;
     }
     if (resource.isPlaylist) {
-      const text = await manager.fetchManifest(session, resource.url);
+      const text = await manager.fetchManifest(session, resource.url, mediaRequests.get(request)?.controller.signal);
       reply.type(PLAYLIST_CONTENT_TYPE);
       return text;
     }
 
-    const clientAbort = new AbortController();
-    reply.raw.on('close', () => clientAbort.abort());
+    const signal = mediaRequests.get(request)!.controller.signal;
     const binary = await manager.openBinary(session, resource.url, {
       range: request.headers.range,
-      signal: clientAbort.signal,
+      signal,
     });
     reply.code(binary.status);
     const passthrough = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
@@ -394,6 +423,11 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       return reply.type('text/html').sendFile('index.html');
     }
     return reply.code(404).send(toErrorBody(notFound('not_found', 'Not found')));
+  });
+
+  app.addHook('preClose', async () => {
+    for (const request of mediaRequests.values()) request.abort();
+    await playback?.shutdown();
   });
 
   app.addHook('onClose', async () => {

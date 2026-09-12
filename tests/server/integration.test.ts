@@ -265,7 +265,7 @@ describe('playback', () => {
     expect(key.statusCode).toBe(200);
   });
 
-  it('creates an independent session per entry request', async () => {
+  it('reuses one session for repeated entry requests to the same link', async () => {
     ctx = await setup();
     const link = await createLink();
     const before = ctx.mock.playbackInfoRequests;
@@ -273,9 +273,9 @@ describe('playback', () => {
     const second = await ctx.built.app.inject({ method: 'GET', url: link.path });
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(200);
-    expect(ctx.mock.playbackInfoRequests).toBe(before + 2);
+    expect(ctx.mock.playbackInfoRequests).toBe(before + 1);
     const sessionOf = (res: { body: string }) => findResource(res.body, 'main.m3u8').split('/')[4];
-    expect(sessionOf(first)).not.toBe(sessionOf(second));
+    expect(sessionOf(first)).toBe(sessionOf(second));
   });
 
   it('does not start a transcode on HEAD entry and rejects forged resources', async () => {

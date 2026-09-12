@@ -23,7 +23,7 @@ It is built for one household/operator and one configured Jellyfin server.
   reach clients.
 - Revocable, expiring links stored in SQLite; tokens are only stored hashed and
   the full URL is shown once at creation.
-- Concurrent consumers get independent Jellyfin play sessions.
+- Viewers of the same link share one Jellyfin play session and bounded server-side segment buffers, intended for synchronized group viewing.
 - Media endpoints support `GET`/`HEAD`/`OPTIONS`, byte ranges and CORS so
   players such as VLC and VRChat can consume them.
 
@@ -74,10 +74,16 @@ npm start           # run the compiled server
 | `DATABASE_PATH` | `./data/jfvrc.db` | SQLite file, `/data/jfvrc.db` in Docker. |
 | `HOST` / `PORT` | `0.0.0.0` / `3000` | Listen address. |
 | `SESSION_IDLE_TTL_SECONDS` | `600` | Idle playback session lifetime. |
-| `MAX_ACTIVE_SESSIONS` | `12` | Global cap on concurrent sessions. |
+| `MAX_ACTIVE_SESSIONS` | `12` | Global cap on active sessions plus pending negotiations; one session per link. |
 | `LINK_DEFAULT_EXPIRY_HOURS` | `24` | Default link lifetime. |
 | `LINK_MAX_EXPIRY_HOURS` | `168` | Maximum link lifetime (7 days). |
-| `UPSTREAM_TIMEOUT_SECONDS` | `30` | Timeout to connect to Jellyfin / receive headers. |
+| `UPSTREAM_TIMEOUT_SECONDS` | `30` | Total deadline for upstream API/playlist requests; header/body inactivity timeout for media transfers. |
+| `MAX_MEDIA_REQUESTS` | `512` | Concurrent playback GET requests, including slow viewers and pending starts. Excess requests receive 503 with Retry-After. |
+| `MAX_UPSTREAM_TRANSFERS` | `8` | Concurrent distinct upstream media transfers; a separate equal cap applies to playlist fetches. |
+| `MEDIA_REQUEST_TIMEOUT_SECONDS` | `120` | Total lifetime of a playback GET, including delivery to slow viewers. |
+| `MEDIA_CACHE_MB` | `128` | Shared media buffer budget in MiB, including active transfers and buffers held by slow viewers. This is not a process RAM limit. |
+| `MAX_MEDIA_RESOURCE_MB` | `16` | Maximum individual media response in MiB; reserved before each cache miss. Must not exceed MEDIA_CACHE_MB. |
+| `MEDIA_CACHE_TTL_SECONDS` | `120` | Completed media cache lifetime. Unused entries may be evicted earlier to admit new transfers. |
 | `LOG_LEVEL` | `info` | Log level. Request URLs and tokens are never logged. |
 
 ## API
@@ -120,6 +126,43 @@ Shared request/response types live in `src/shared/contracts.ts`.
   forwarding playback requests to Fastify. The default management UI is
   served at the origin root.
 
+## Group viewing and capacity
+
+Viewers sharing one link should generally watch the same part of the video.
+A cache miss fetches the segment once and streams its bytes to all current
+viewers; later viewers can replay the retained buffer. Full and Range responses
+have separate cache keys. Buffers are scoped to the playback session, and every
+request still checks link authorization. Client-facing responses remain
+`no-store`; revocation and expiry invalidate server-side buffers and cancel
+transfers. One viewer disconnecting does not interrupt the remaining viewers;
+the last disconnect cancels an unfinished upstream transfer.
+
+The gateway reserves `MAX_MEDIA_RESOURCE_MB` before starting a media cache miss.
+At the defaults, eight distinct unfinished segments can occupy the entire
+128 MiB buffer budget. Completed buffers are charged in 64 KiB blocks; unused
+buffers are evicted when capacity is needed. Slow viewers keep their buffers
+charged until released. Requests exceeding memory or transfer capacity fail
+promptly with 503 and `Retry-After`, rather than building an unbounded queue.
+Media responses over 16 MiB fail; increase the resource limit and cache budget
+together if your Jellyfin segments require it. There are also small bounded
+playlist caches (one-second lifetime, 8 MiB total). Playlist/JSON input is capped
+at 5 MiB while reading. Resource maps allow 32,768 entries and 16 MiB of upstream
+URL text per session, so the former 4,096-segment ceiling no longer blocks long
+VOD playlists; unusually large playlists can still hit the explicit limits.
+
+The cache reduces Jellyfin-to-gateway traffic, but gateway-to-viewer bandwidth
+still scales with viewer count. For example, 100 viewers averaging 8 Mbps need
+about 800 Mbps of outbound capacity, before overhead. Start with conservative
+limits and measure sustained playback on the actual host before raising them.
+
+A distant seek to an ungenerated segment can make Jellyfin reposition the
+shared transcode. Cached segments help nearby/briefly delayed viewers, but do
+not provide independent seeking guarantees or a fully pre-transcoded video.
+A synchronized player/world should coordinate seeks. Independent viewing would
+need separate sessions or pre-generated media. Horizontal replicas still need
+sticky routing or shared state; SQLite alone does not share these buffers or
+sessions.
+
 ## Live smoke test guide (not run automatically)
 
 These checks need a real Jellyfin server, credentials and a player; the
@@ -130,9 +173,10 @@ automated tests use a mock upstream only.
 2. **VLC external subtitle formats**: create links selecting SRT, ASS/SSA and
    image-based (PGS/DVD) subtitles. Text subtitles should be burned in; verify
    image-based behavior against your Jellyfin/ffmpeg build.
-3. **Reopen and concurrency**: open the link twice simultaneously and confirm
-   independent sessions and seeking; also revoke the link and confirm both stop
-   and that Jellyfin no longer lists the transcodes.
+3. **Reopen and concurrency**: open the link in multiple players and confirm
+   one shared session and smooth synchronized playback. Exercise different buffer
+   depths, late joins, pauses, and seeks; also revoke the link and confirm all
+   viewers stop and Jellyfin no longer lists the transcode.
 4. **Range/binary**: `curl -H 'Range: bytes=0-1023' <segment-url> -D -` returns
    `206` with `Content-Range`.
 5. **VRChat**: add `PUBLIC_BASE_URL` host to VRChat's trusted URLs if the world

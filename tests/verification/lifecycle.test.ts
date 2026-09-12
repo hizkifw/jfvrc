@@ -118,13 +118,14 @@ describe('link and session lifecycle', () => {
     }
   });
 
-  it('creates independent sessions for concurrent consumers', async () => {
+  it('reuses a single session across repeated master manifest requests', async () => {
     stack = await startStack();
     const link = await createLink(stack.app, stack.authHeaders);
     const first = await stack.app.inject({ method: 'GET', url: link.path });
     const second = await stack.app.inject({ method: 'GET', url: link.path });
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(200);
+    expect(stack.built.playback!.activeSessionCount).toBe(1);
     const sessionIds = new Set<string>();
     for (const manifest of [first.body, second.body]) {
       for (const uri of resourcePaths(manifest)) {
@@ -132,16 +133,17 @@ describe('link and session lifecycle', () => {
         if (match) sessionIds.add(match[1]!);
       }
     }
-    expect(sessionIds.size).toBe(2);
+    expect(sessionIds.size).toBe(1);
   });
 
   it('bounds active sessions and rejects once the cap is reached', async () => {
     stack = await startStack({ env: { MAX_ACTIVE_SESSIONS: '1' } });
-    const link = await createLink(stack.app, stack.authHeaders);
-    const first = await stack.app.inject({ method: 'GET', url: link.path });
-    expect(first.statusCode).toBe(200);
-    const second = await stack.app.inject({ method: 'GET', url: link.path });
-    expect(second.statusCode).toBe(503);
-    expect(second.json()).toMatchObject({ error: { code: 'too_many_sessions' } });
+    const first = await createLink(stack.app, stack.authHeaders);
+    const second = await createLink(stack.app, stack.authHeaders);
+    const firstRes = await stack.app.inject({ method: 'GET', url: first.path });
+    expect(firstRes.statusCode).toBe(200);
+    const secondRes = await stack.app.inject({ method: 'GET', url: second.path });
+    expect(secondRes.statusCode).toBe(503);
+    expect(secondRes.json()).toMatchObject({ error: { code: 'too_many_sessions' } });
   });
 });

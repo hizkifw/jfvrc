@@ -218,7 +218,7 @@ describe('Playback negotiation and upstream requests', () => {
     expect(stop.query.get('deviceId')).not.toBe('');
   });
 
-  it('uses a distinct DeviceId/PlaySessionId per playback session', async () => {
+  it('reuses the DeviceId/PlaySessionId for the same playback link', async () => {
     stack = await startStack();
     const link = await createLink(stack.app, stack.authHeaders);
     const a = await stack.app.inject({ method: 'GET', url: link.path });
@@ -226,10 +226,10 @@ describe('Playback negotiation and upstream requests', () => {
     expect(a.statusCode).toBe(200);
     expect(b.statusCode).toBe(200);
     const playbackCalls = stack.mock.find('/PlaybackInfo');
-    expect(playbackCalls.length).toBe(2);
+    expect(playbackCalls.length).toBe(1);
     const deviceIds = playbackCalls.map(
       (r) => /DeviceId="([^"]+)"/.exec(String(r.headers['authorization'] ?? ''))?.[1],
     );
-    expect(new Set(deviceIds).size).toBe(2);
+    expect(new Set(deviceIds).size).toBe(1);
   });
 });
