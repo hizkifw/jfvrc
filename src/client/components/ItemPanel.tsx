@@ -2,10 +2,21 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, errorMessage, itemLabel } from '../api';
 import { formatDateTime, formatRuntime, formatTrack, relativeExpiry } from '../format';
-import type { CreateLinkResponse, ItemDetails, Preset } from '../types';
+import type { CreateLinkResponse, ItemDetails, Preset, Track } from '../types';
 import { CopyButton, ErrorBanner, Field, Spinner } from './ui';
 
 const MAX_EXPIRY_HOURS = 168;
+
+const JAPANESE_TRACK_RE = /japanese|\bjpn\b|\bjp\b|\bja\b/i;
+const ENGLISH_TRACK_RE = /english|\beng\b|\ben\b/i;
+
+/** Index of the first track whose language or label roughly matches, else null. */
+export function preferredTrackIndex(tracks: Track[], pattern: RegExp): number | null {
+  const match = tracks.find(
+    (track) => pattern.test(track.language ?? '') || pattern.test(track.label),
+  );
+  return match ? match.index : null;
+}
 
 export function ItemPanel({
   item,
@@ -33,8 +44,6 @@ export function ItemPanel({
 
   useEffect(() => {
     setSourceId(item.mediaSources[0]?.id ?? '');
-    setAudio('');
-    setSubtitle(-1);
     setPreset('1080p');
     setStartSeconds('0');
     setExpiryHours('24');
@@ -42,11 +51,24 @@ export function ItemPanel({
     setError(null);
   }, [item]);
 
+  // Prefer Japanese audio and English subtitles when the selected source has
+  // them; otherwise fall back to the server defaults (auto audio, no subtitles).
+  useEffect(() => {
+    if (!source) {
+      setAudio('');
+      setSubtitle(-1);
+      return;
+    }
+    const japanese = preferredTrackIndex(source.audioTracks, JAPANESE_TRACK_RE);
+    setAudio(japanese !== null ? String(japanese) : '');
+    const english = preferredTrackIndex(source.subtitleTracks, ENGLISH_TRACK_RE);
+    setSubtitle(english !== null ? english : -1);
+  }, [source]);
+
   function selectSource(id: string) {
     setSourceId(id);
-    setAudio('');
-    setSubtitle(-1);
   }
+
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
