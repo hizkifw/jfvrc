@@ -333,6 +333,21 @@ button:disabled {
   accent-color: var(--accent);
 }
 
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  font-weight: 500;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+  width: auto;
+}
+
 .radio span {
   display: grid;
 }

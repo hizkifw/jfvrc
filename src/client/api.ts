@@ -25,12 +25,46 @@ export class ApiError extends Error {
 let adminToken = '';
 let onUnauthorized: (() => void) | null = null;
 
+const TOKEN_KEY = 'jfvrc.admin-token';
+
 export function setAdminToken(token: string): void {
   adminToken = token;
 }
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
   onUnauthorized = handler;
+}
+
+/**
+ * Read a previously remembered admin token. `localStorage` (survives browser
+ * restarts) takes precedence over `sessionStorage` (survives reload only).
+ */
+export function readStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the token after it has been validated against the server. */
+export function storeToken(token: string, remember: boolean): void {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    (remember ? localStorage : sessionStorage).setItem(TOKEN_KEY, token);
+  } catch {
+    // Storage may be unavailable (private mode); in-memory auth still works.
+  }
+}
+
+export function clearStoredToken(): void {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

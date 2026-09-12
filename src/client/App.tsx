@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   api,
+  clearStoredToken,
   errorMessage,
+  readStoredToken,
   setAdminToken,
   setUnauthorizedHandler,
+  storeToken,
 } from './api';
 import { ItemPanel } from './components/ItemPanel';
 import { LibraryPanel } from './components/LibraryPanel';
 import { LinksPanel } from './components/LinksPanel';
 import { ResolvePanel } from './components/ResolvePanel';
 import { TokenGate } from './components/TokenGate';
+import { ErrorBanner, Spinner } from './components/ui';
+import { DEFAULT_ROUTE, useRoute } from './router';
+import type { Route, Tab } from './router';
 import type { ItemDetails, StatusResponse } from './types';
-
-type Tab = 'resolve' | 'library' | 'links';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'resolve', label: 'Resolve' },
@@ -21,11 +25,17 @@ const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 export function App() {
-  const [token, setToken] = useState<string | null>(null);
+  const [route, navigate] = useRoute();
+  const [token, setToken] = useState<string | null>(() => {
+    const stored = readStoredToken();
+    if (stored) setAdminToken(stored);
+    return stored;
+  });
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('resolve');
   const [selectedItem, setSelectedItem] = useState<ItemDetails | null>(null);
+  const [itemError, setItemError] = useState<string | null>(null);
+  const [itemReload, setItemReload] = useState(0);
   const [reloadToken, setReloadToken] = useState(0);
   const [busy, setBusy] = useState(false);
 
@@ -36,6 +46,7 @@ export function App() {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setAdminToken('');
+      clearStoredToken();
       setToken(null);
       setStatus(null);
       setSelectedItem(null);
@@ -60,34 +71,89 @@ export function App() {
     };
   }, [token]);
 
-  const handleConnect = useCallback(async (value: string) => {
+  // Restore the open item from the URL (e.g. after a reload or a shared link).
+  useEffect(() => {
+    if (!token) return;
+    const itemId = route.itemId;
+    if (!itemId) {
+      setSelectedItem(null);
+      setItemError(null);
+      return;
+    }
+    if (selectedItem?.id === itemId) return;
+    let cancelled = false;
+    setItemError(null);
+    api
+      .item(itemId)
+      .then((details) => {
+        if (!cancelled) setSelectedItem(details);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSelectedItem(null);
+          setItemError(errorMessage(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [route.itemId, token, selectedItem?.id, itemReload]);
+
+  const handleConnect = useCallback(async (value: string, remember: boolean) => {
     setAdminToken(value);
     try {
       const result = await api.status();
       setStatus(result);
       setStatusError(null);
+      storeToken(value, remember);
       setToken(value);
     } catch (err) {
       setAdminToken('');
+      clearStoredToken();
       throw err;
     }
   }, []);
 
+  const handleSelect = useCallback(
+    (item: ItemDetails) => {
+      setSelectedItem(item);
+      setItemError(null);
+      navigate({ ...route, itemId: item.id });
+    },
+    [navigate, route],
+  );
+
+  const handleLibraryNavigate = useCallback(
+    (next: Partial<Pick<Route, 'path' | 'query' | 'startIndex'>>) => {
+      navigate({ ...route, tab: 'library', ...next, itemId: null });
+    },
+    [navigate, route],
+  );
+
+  const closeItem = useCallback(() => {
+    setSelectedItem(null);
+    setItemError(null);
+    navigate({ ...route, itemId: null });
+  }, [navigate, route]);
+
   function lock() {
     setAdminToken('');
+    clearStoredToken();
     setToken(null);
     setStatus(null);
     setSelectedItem(null);
   }
 
-  function selectTab(next: Tab) {
-    setTab(next);
+  function selectTab(tab: Tab) {
     setSelectedItem(null);
+    navigate({ ...DEFAULT_ROUTE, tab });
   }
 
   if (!token) {
     return <TokenGate onConnect={handleConnect} />;
   }
+
+  const openItem = route.itemId && selectedItem?.id === route.itemId ? selectedItem : null;
 
   return (
     <div className="app">
@@ -138,9 +204,9 @@ export function App() {
             type="button"
             role="tab"
             id={`tab-${entry.id}`}
-            aria-selected={tab === entry.id && !selectedItem}
+            aria-selected={route.tab === entry.id && !route.itemId}
             aria-controls={`panel-${entry.id}`}
-            className={tab === entry.id && !selectedItem ? 'tab tab-active' : 'tab'}
+            className={route.tab === entry.id && !route.itemId ? 'tab tab-active' : 'tab'}
             onClick={() => selectTab(entry.id)}
           >
             {entry.label}
@@ -148,17 +214,32 @@ export function App() {
         ))}
       </nav>
 
-      <main className="wrap" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {selectedItem ? (
-          <ItemPanel
-            item={selectedItem}
-            onClose={() => setSelectedItem(null)}
-            onCreated={() => setReloadToken((value) => value + 1)}
+      <main className="wrap" role="tabpanel" id={`panel-${route.tab}`} aria-labelledby={`tab-${route.tab}`}>
+        {route.itemId ? (
+          openItem ? (
+            <ItemPanel
+              item={openItem}
+              onClose={closeItem}
+              onCreated={() => setReloadToken((value) => value + 1)}
+            />
+          ) : itemError ? (
+            <ErrorBanner message={itemError} onRetry={() => setItemReload((value) => value + 1)} />
+          ) : (
+            <div className="center-pad">
+              <Spinner label="Loading item" />
+            </div>
+          )
+        ) : route.tab === 'resolve' ? (
+          <ResolvePanel onSelect={handleSelect} onBusyChange={handleBusyChange} />
+        ) : route.tab === 'library' ? (
+          <LibraryPanel
+            path={route.path}
+            query={route.query}
+            startIndex={route.startIndex}
+            onNavigate={handleLibraryNavigate}
+            onSelect={handleSelect}
+            onBusyChange={handleBusyChange}
           />
-        ) : tab === 'resolve' ? (
-          <ResolvePanel onSelect={setSelectedItem} onBusyChange={handleBusyChange} />
-        ) : tab === 'library' ? (
-          <LibraryPanel onSelect={setSelectedItem} onBusyChange={handleBusyChange} />
         ) : (
           <LinksPanel reloadToken={reloadToken} />
         )}

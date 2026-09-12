@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, errorMessage } from '../api';
 import { formatRuntime } from '../format';
@@ -59,26 +59,95 @@ function childLabel(item: MediaItem): string | null {
   return `${item.childCount} ${item.childCount === 1 ? 'item' : 'items'}`;
 }
 
+export interface LibraryNavigation {
+  path?: string[];
+  query?: string;
+  startIndex?: number;
+}
+
 export function LibraryPanel({
+  path,
+  query,
+  startIndex,
+  onNavigate,
   onSelect,
   onBusyChange,
 }: {
+  path: string[];
+  query: string;
+  startIndex: number;
+  onNavigate: (next: LibraryNavigation) => void;
   onSelect: (item: ItemDetails) => void;
   onBusyChange: (busy: boolean) => void;
 }) {
-  const [queryDraft, setQueryDraft] = useState('');
-  const [query, setQuery] = useState('');
-  const [crumbs, setCrumbs] = useState<Crumb[]>([ROOT_CRUMB]);
-  const [startIndex, setStartIndex] = useState(0);
+  const [queryDraft, setQueryDraft] = useState(query);
+  const [crumbState, setCrumbState] = useState<{ key: string; crumbs: Crumb[] }>({
+    key: '',
+    crumbs: [ROOT_CRUMB],
+  });
+  const [crumbError, setCrumbError] = useState<string | null>(null);
+  const [crumbReload, setCrumbReload] = useState(0);
   const [items, setItems] = useState<MediaItem[]>([]);
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const itemCache = useRef(new Map<string, ItemDetails>());
 
-  const current = crumbs[crumbs.length - 1];
+  const pathKey = path.join('/');
   const searching = query.length > 0;
-  const atRoot = !searching && current.id === null;
+  const resolved = crumbState.key === pathKey;
+  const crumbs = resolved ? crumbState.crumbs : [ROOT_CRUMB];
+  const currentId = path.length > 0 ? path[path.length - 1] : null;
+  const current = resolved && path.length > 0 ? crumbs[crumbs.length - 1] : undefined;
+  const currentType = current?.type;
+  const currentSeriesId =
+    current?.seriesId ?? (path.length >= 2 ? path[path.length - 2] : undefined);
+
+  useEffect(() => {
+    setQueryDraft(query);
+  }, [query]);
+
+  // Rebuild breadcrumb names/types for the URL path (also restores them on reload).
+  useEffect(() => {
+    if (!pathKey) {
+      setCrumbState({ key: '', crumbs: [ROOT_CRUMB] });
+      setCrumbError(null);
+      return;
+    }
+    let cancelled = false;
+    setCrumbError(null);
+    Promise.all(
+      path.map((id) => {
+        const cached = itemCache.current.get(id);
+        return cached ? Promise.resolve(cached) : api.item(id);
+      }),
+    )
+      .then((details) => {
+        if (cancelled) return;
+        details.forEach((detail) => itemCache.current.set(detail.id, detail));
+        setCrumbState({
+          key: pathKey,
+          crumbs: [
+            ROOT_CRUMB,
+            ...details.map((detail) => ({
+              id: detail.id,
+              name: detail.name,
+              type: detail.type,
+              seriesId: detail.seriesId,
+            })),
+          ],
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setCrumbError(errorMessage(err));
+        setCrumbState({ key: pathKey, crumbs: [ROOT_CRUMB] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathKey, crumbReload]);
 
   const load = useCallback(
     async (signal: { cancelled: boolean }) => {
@@ -91,29 +160,29 @@ export function LibraryPanel({
           if (signal.cancelled) return;
           setItems(result.items);
           setTotal(result.total);
-        } else if (current.id === null) {
+        } else if (!currentId) {
           const result = await api.libraryViews();
           if (signal.cancelled) return;
           setItems(result.items);
           setTotal(result.items.length);
-        } else if (current.type === 'Series') {
-          const result = await api.librarySeasons(current.id);
+        } else if (currentType === 'Series') {
+          const result = await api.librarySeasons(currentId);
           if (signal.cancelled) return;
           setItems(result.items);
           setTotal(result.total);
-        } else if (current.type === 'Season') {
-          if (!current.seriesId) {
+        } else if (currentType === 'Season') {
+          if (!currentSeriesId) {
             setError('This season is missing its series reference.');
             setItems([]);
             setTotal(0);
             return;
           }
-          const result = await api.libraryEpisodes(current.seriesId, current.id, startIndex, PAGE_SIZE);
+          const result = await api.libraryEpisodes(currentSeriesId, currentId, startIndex, PAGE_SIZE);
           if (signal.cancelled) return;
           setItems(result.items);
           setTotal(result.total);
         } else {
-          const result = await api.libraryItems(current.id, startIndex, PAGE_SIZE);
+          const result = await api.libraryItems(currentId, startIndex, PAGE_SIZE);
           if (signal.cancelled) return;
           setItems(result.items);
           setTotal(result.total);
@@ -128,28 +197,36 @@ export function LibraryPanel({
         }
       }
     },
-    [searching, query, current.id, current.type, current.seriesId, startIndex, onBusyChange],
+    [
+      searching,
+      query,
+      currentId,
+      currentType,
+      currentSeriesId,
+      startIndex,
+      onBusyChange,
+    ],
   );
 
+  const resolvingCrumbs = !searching && path.length > 0 && !resolved;
+
   useEffect(() => {
+    if (!searching && crumbError) return;
+    if (!searching && resolvingCrumbs) return;
     const signal = { cancelled: false };
     void load(signal);
     return () => {
       signal.cancelled = true;
     };
-  }, [load]);
+  }, [load, searching, crumbError, resolvingCrumbs]);
 
   function handleSearch(event: FormEvent) {
     event.preventDefault();
-    setStartIndex(0);
-    setQuery(queryDraft.trim());
+    onNavigate({ query: queryDraft.trim(), startIndex: 0 });
   }
 
   function goToCrumb(index: number) {
-    setQuery('');
-    setQueryDraft('');
-    setStartIndex(0);
-    setCrumbs((prev) => prev.slice(0, index + 1));
+    onNavigate({ path: path.slice(0, index), query: '', startIndex: 0 });
   }
 
   async function openItem(item: MediaItem) {
@@ -169,21 +246,17 @@ export function LibraryPanel({
 
   function activate(item: MediaItem) {
     if (isBrowsable(item.type)) {
-      setQuery('');
-      setQueryDraft('');
-      setStartIndex(0);
-      const crumb: Crumb = {
-        id: item.id,
-        name: item.name,
-        type: item.type,
-        seriesId: item.seriesId ?? (item.type === 'Season' ? current.id ?? undefined : undefined),
-      };
-      setCrumbs((prev) => (searching ? [ROOT_CRUMB, crumb] : [...prev, crumb]));
+      onNavigate({
+        path: searching ? [item.id] : [...path, item.id],
+        query: '',
+        startIndex: 0,
+      });
       return;
     }
     void openItem(item);
   }
 
+  const atRoot = !searching && !currentId;
   const pageStart = total === 0 ? 0 : startIndex + 1;
   const pageEnd = Math.min(startIndex + items.length, total);
   const canPrev = startIndex > 0;
@@ -194,7 +267,7 @@ export function LibraryPanel({
     ? `Search results for "${query}".`
     : atRoot
       ? 'Choose a library, then drill down through series and seasons to an episode.'
-      : `Browsing ${current.name}.`;
+      : `Browsing ${current?.name ?? '…'}.`;
 
   return (
     <section className="panel" aria-labelledby="library-heading">
@@ -248,15 +321,19 @@ export function LibraryPanel({
         ) : null}
       </nav>
 
+      {crumbError ? (
+        <ErrorBanner message={crumbError} onRetry={() => setCrumbReload((value) => value + 1)} />
+      ) : null}
+
       {error ? <ErrorBanner message={error} onRetry={() => void load({ cancelled: false })} /> : null}
 
-      {busy && items.length === 0 ? (
+      {resolvingCrumbs || (busy && items.length === 0) ? (
         <div className="center-pad">
           <Spinner label="Loading library" />
         </div>
       ) : null}
 
-      {!busy && items.length === 0 && !error ? (
+      {!resolvingCrumbs && !busy && items.length === 0 && !error && !crumbError ? (
         <EmptyState title="No items found">
           {searching
             ? `Nothing matched "${query}". Try a different search.`
@@ -311,7 +388,7 @@ export function LibraryPanel({
               <button
                 type="button"
                 className="btn btn-small"
-                onClick={() => setStartIndex((value) => Math.max(0, value - PAGE_SIZE))}
+                onClick={() => onNavigate({ startIndex: Math.max(0, startIndex - PAGE_SIZE) })}
                 disabled={!canPrev || busy}
               >
                 Previous
@@ -322,7 +399,7 @@ export function LibraryPanel({
               <button
                 type="button"
                 className="btn btn-small"
-                onClick={() => setStartIndex((value) => value + PAGE_SIZE)}
+                onClick={() => onNavigate({ startIndex: startIndex + PAGE_SIZE })}
                 disabled={!canNext || busy}
               >
                 Next

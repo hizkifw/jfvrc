@@ -3,8 +3,13 @@ import type { FormEvent } from 'react';
 import { errorMessage } from '../api';
 import { ErrorBanner, Spinner } from './ui';
 
-export function TokenGate({ onConnect }: { onConnect: (token: string) => Promise<void> }) {
+export function TokenGate({
+  onConnect,
+}: {
+  onConnect: (token: string, remember: boolean) => Promise<void>;
+}) {
   const [token, setToken] = useState('');
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +23,7 @@ export function TokenGate({ onConnect }: { onConnect: (token: string) => Promise
     setBusy(true);
     setError(null);
     try {
-      await onConnect(trimmed);
+      await onConnect(trimmed, remember);
     } catch (err) {
       setError(errorMessage(err));
       setBusy(false);
@@ -53,8 +58,21 @@ export function TokenGate({ onConnect }: { onConnect: (token: string) => Promise
               placeholder="Bearer token"
               aria-invalid={error ? true : undefined}
             />
-            <p className="hint">Kept in memory for this tab only; never stored or logged.</p>
+            <p className="hint">
+              Validated against the server before use. With "Remember" on it is kept in this
+              browser's local storage so a reload or restart keeps you signed in; turn it off to
+              keep it for this tab's session only. Never logged.
+            </p>
           </div>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(event) => setRemember(event.target.checked)}
+              disabled={busy}
+            />
+            <span>Remember on this device</span>
+          </label>
           {error ? <ErrorBanner message={error} /> : null}
           <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
             {busy ? <Spinner label="Checking token" /> : 'Unlock'}
