@@ -47,6 +47,7 @@ export async function startStack(options: StackOptions = {}): Promise<Stack> {
     DATABASE_PATH: ':memory:',
     SESSION_IDLE_TTL_SECONDS: '600',
     UPSTREAM_TIMEOUT_SECONDS: '5',
+    PREWARM_LINKS: 'false',
     ...options.env,
   };
   const config = loadConfig(env);

@@ -84,6 +84,7 @@ npm start           # run the compiled server
 | `MEDIA_CACHE_MB` | `128` | Shared media buffer budget in MiB, including active transfers and buffers held by slow viewers. This is not a process RAM limit. |
 | `MAX_MEDIA_RESOURCE_MB` | `16` | Maximum individual media response in MiB; reserved before each cache miss. Must not exceed MEDIA_CACHE_MB. |
 | `MEDIA_CACHE_TTL_SECONDS` | `120` | Completed media cache lifetime. Unused entries may be evicted earlier to admit new transfers. |
+| `PREWARM_LINKS` | `true` | On link creation, negotiate the transcode and buffer the first segment in the background so playback starts immediately. Set `false` to negotiate only on the first player request. |
 | `LOG_LEVEL` | `info` | Log level. Request URLs and tokens are never logged. |
 
 ## API

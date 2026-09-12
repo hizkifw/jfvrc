@@ -379,6 +379,11 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       startSeconds: body.startSeconds,
       expiresAt,
     });
+    // Start negotiating/buffering in the background so the player can begin as
+    // soon as the operator pastes the link. Never awaited and never throws.
+    if (config.prewarmLinks && playback) {
+      void playback.warmLink(record, token);
+    }
     reply.code(201);
     return {
       id: record.id,

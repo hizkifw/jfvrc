@@ -371,6 +371,73 @@ export class PlaybackManager {
     }
   }
 
+  /**
+   * Best-effort warm-up when a link is created. Negotiates the Jellyfin
+   * session, fetches the master and first media playlist (which starts the
+   * upstream transcoder), then buffers the first segment into the shared media
+   * cache so a player that connects shortly after gets an immediate start.
+   * Errors are swallowed: a later playback request simply negotiates on demand.
+   */
+  async warmLink(link: LinkRecord, token: string): Promise<void> {
+    if (this.closed) return;
+    try {
+      const session = await this.createSession(link, token);
+      if (this.closed) return;
+      const master = await this.fetchManifest(session, session.masterUrl);
+      const variant = this.firstVariantUrl(master, session);
+      if (!variant) return;
+      await this.fetchManifest(session, variant);
+      const segment = this.firstSegmentUrl(session);
+      if (segment) await this.prefetchBinary(session, segment);
+    } catch {
+      // Warm-up is opportunistic; never surface it to the caller.
+    }
+  }
+
+  /** First media playlist referenced by a rewritten master manifest. */
+  private firstVariantUrl(masterText: string, session: PlaybackSession): string | undefined {
+    const lines = masterText.split(/\r\n|\n|\r/);
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!/^#EXT-X-STREAM-INF:/i.test(lines[i]!.trim())) continue;
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const candidate = lines[j]!.trim();
+        if (candidate === '') continue;
+        if (candidate.startsWith('#')) break;
+        const match = /\/s\/[^/]+\/p\/[^/]+\/([^/]+)\//.exec(candidate);
+        const resource = match ? session.resources.get(decodeURIComponent(match[1]!)) : undefined;
+        return resource?.url;
+      }
+    }
+    return undefined;
+  }
+
+  /** First media segment registered while rewriting a variant playlist. */
+  private firstSegmentUrl(session: PlaybackSession): string | undefined {
+    for (const resource of session.resources.values()) {
+      if (/\.(ts|m4s|aac|mp3)$/i.test(resource.url.split('?', 1)[0]!)) return resource.url;
+    }
+    return undefined;
+  }
+
+  private async prefetchBinary(session: PlaybackSession, upstreamUrl: string): Promise<void> {
+    const binary = await this.openBinary(session, upstreamUrl, {});
+    const body = binary.body;
+    if (!body) {
+      binary.release();
+      return;
+    }
+    const reader = body.getReader();
+    try {
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    } finally {
+      reader.releaseLock();
+      binary.release();
+    }
+  }
+
   private stopEncoding(deviceId: string, playSessionId: string): Promise<void> {
     const stopping = this.jellyfin.stopEncoding(deviceId, playSessionId);
     this.stopping.add(stopping);

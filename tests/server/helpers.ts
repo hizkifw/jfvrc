@@ -25,6 +25,7 @@ export async function setup(basePath = '', databasePath = ':memory:'): Promise<T
     SESSION_IDLE_TTL_SECONDS: '600',
     LINK_DEFAULT_EXPIRY_HOURS: '24',
     LINK_MAX_EXPIRY_HOURS: '168',
+    PREWARM_LINKS: 'false',
   };
   const config = loadConfig(env);
   const built = buildApp({ config, logger: false, clientDir: '/nonexistent-client-dir' });

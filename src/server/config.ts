@@ -30,6 +30,8 @@ export interface AppConfig {
   mediaCacheBytes: number;
   maxMediaResourceBytes: number;
   mediaCacheTtlMs: number;
+  /** Negotiate + start buffering a newly created link so playback begins fast. */
+  prewarmLinks: boolean;
 }
 
 const intFromEnv = (def: number) =>
@@ -38,6 +40,14 @@ const intFromEnv = (def: number) =>
     .optional()
     .transform((v) => (v === undefined || v === '' ? def : Number(v)))
     .pipe(z.number().int().positive());
+
+const boolFromEnv = (def: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) =>
+      v === undefined || v.trim() === '' ? def : /^(1|true|yes|on)$/i.test(v.trim()),
+    );
 
 const envSchema = z.object({
   JELLYFIN_URL: z.string().trim().optional(),
@@ -59,6 +69,7 @@ const envSchema = z.object({
   MEDIA_CACHE_MB: intFromEnv(128),
   MAX_MEDIA_RESOURCE_MB: intFromEnv(16),
   MEDIA_CACHE_TTL_SECONDS: intFromEnv(120),
+  PREWARM_LINKS: boolFromEnv(true),
 });
 
 export class ConfigError extends Error {
@@ -166,5 +177,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     mediaCacheBytes: e.MEDIA_CACHE_MB * 1024 * 1024,
     maxMediaResourceBytes: e.MAX_MEDIA_RESOURCE_MB * 1024 * 1024,
     mediaCacheTtlMs: e.MEDIA_CACHE_TTL_SECONDS * 1000,
+    prewarmLinks: e.PREWARM_LINKS,
   };
 }

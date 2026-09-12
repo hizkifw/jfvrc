@@ -357,4 +357,33 @@ describe('API contract and frontend compatibility', () => {
     expect(res.headers['content-type']).toContain('application/json');
     expect(res.json()).toMatchObject({ error: { code: 'not_found' } });
   });
+
+  it('pre-warms a newly created link so playback can start immediately', async () => {
+    stack = await startStack({ env: { PREWARM_LINKS: 'true' } });
+    const link = await createLink(stack.app, stack.authHeaders);
+    const mock = stack.mock;
+
+    const waitFor = async (predicate: () => boolean, label: string) => {
+      const deadline = Date.now() + 3000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+
+    await waitFor(() => mock.find('/PlaybackInfo').length === 1, 'negotiation');
+    await waitFor(() => mock.find('/main.m3u8').length >= 1, 'variant playlist');
+    await waitFor(() => mock.find('/hls1/').length >= 1, 'first segment');
+
+    // The warm session is reused, so the first real player request adds no
+    // further negotiation.
+    const negotiations = mock.find('/PlaybackInfo').length;
+    const master = await stack.app.inject({
+      method: 'GET',
+      url: link.path,
+      headers: stack.authHeaders,
+    });
+    expect(master.statusCode).toBe(200);
+    expect(mock.find('/PlaybackInfo').length).toBe(negotiations);
+  });
 });
