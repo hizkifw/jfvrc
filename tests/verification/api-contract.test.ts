@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { EPISODE_ID, MOVIE_ID, SECRET_TOKEN } from './support/mockJellyfin';
+import {
+  EPISODE_ID,
+  MOVIE_ID,
+  MOVIES_LIBRARY_ID,
+  SECRET_TOKEN,
+  SEASON_ID,
+  SERIES_ID,
+  TV_LIBRARY_ID,
+} from './support/mockJellyfin';
 import { ADMIN_TOKEN, createLink, startStack, type Stack } from './support/harness';
 
 let stack: Stack | undefined;
@@ -146,6 +154,59 @@ describe('API contract and frontend compatibility', () => {
     });
     expect(badLimit.statusCode).toBe(400);
     expect(badLimit.json()).toMatchObject({ error: { code: 'invalid_query' } });
+  });
+
+  it('browses libraries, series, seasons and episodes hierarchically', async () => {
+    stack = await startStack();
+    const auth = stack.authHeaders;
+    const get = (url: string) => stack!.app.inject({ method: 'GET', url, headers: auth });
+
+    const views = await get('/api/library/views');
+    expect(views.statusCode).toBe(200);
+    const libraries = (views.json() as {
+      items: Array<{ id: string; type: string; collectionType?: string; childCount?: number }>;
+    }).items;
+    expect(libraries).toHaveLength(2);
+    expect(libraries[0]).toMatchObject({
+      id: MOVIES_LIBRARY_ID,
+      type: 'CollectionFolder',
+      collectionType: 'movies',
+      childCount: 6,
+    });
+
+    const movies = await get(`/api/library/items?parentId=${MOVIES_LIBRARY_ID}`);
+    expect(movies.statusCode).toBe(200);
+    expect((movies.json() as { items: Array<{ type: string }> }).items[0]!.type).toBe('Movie');
+
+    const shows = await get(`/api/library/items?parentId=${TV_LIBRARY_ID}`);
+    const series = (shows.json() as { items: Array<{ id: string; type: string }> }).items;
+    expect(series).toEqual([expect.objectContaining({ id: SERIES_ID, type: 'Series' })]);
+
+    const seasons = await get(`/api/library/shows/${SERIES_ID}/seasons`);
+    expect((seasons.json() as { items: Array<{ type: string; seasonNumber?: number }> }).items).toEqual([
+      expect.objectContaining({ type: 'Season', seasonNumber: 1 }),
+    ]);
+
+    const episodes = await get(
+      `/api/library/shows/${SERIES_ID}/seasons/${SEASON_ID}/episodes`,
+    );
+    expect((episodes.json() as { items: Array<{ type: string; episodeNumber?: number; seriesName?: string }> }).items).toEqual([
+      expect.objectContaining({ type: 'Episode', episodeNumber: 1, seriesName: 'Verification Show' }),
+    ]);
+
+    // Library children are a non-recursive listing; episodes use the Shows API.
+    const upstream = stack.mock.last('/Items');
+    expect(upstream?.query.get('parentId')).toBe(TV_LIBRARY_ID);
+    expect(upstream?.query.get('recursive')).toBe('false');
+    expect(stack.mock.last(`/Shows/${SERIES_ID}/Episodes`)?.query.get('seasonId')).toBe(SEASON_ID);
+
+    const invalid = await get('/api/library/items?parentId=not-an-id');
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: { code: 'invalid_item_id' } });
+
+    const missing = await get('/api/library/items');
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json()).toMatchObject({ error: { code: 'invalid_parent_id' } });
   });
 
   it('rejects link creation with unknown source/track and out-of-range start', async () => {

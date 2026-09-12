@@ -4,7 +4,15 @@
  * in docs/architecture.md.
  */
 
-export type ItemType = 'Movie' | 'Episode';
+export type ItemType =
+  | 'Movie'
+  | 'Episode'
+  | 'Series'
+  | 'Season'
+  | 'Folder'
+  | 'CollectionFolder'
+  | 'BoxSet'
+  | 'Video';
 
 export type Preset = '1080p' | '720p';
 
@@ -30,10 +38,15 @@ export interface MediaItem {
   type: ItemType;
   year?: number;
   seriesName?: string;
+  seriesId?: string;
   seasonNumber?: number;
   episodeNumber?: number;
   overview?: string;
   runTimeSeconds?: number;
+  /** Number of direct children, for browsable folders/series/seasons. */
+  childCount?: number;
+  /** Jellyfin collection type for library views (e.g. "movies", "tvshows"). */
+  collectionType?: string;
 }
 
 export interface ItemDetails extends MediaItem {
@@ -74,6 +87,10 @@ export interface ResolveRequest {
 export interface LibraryResponse {
   items: MediaItem[];
   total: number;
+}
+
+export interface ViewsResponse {
+  items: MediaItem[];
 }
 
 export interface LinksResponse {

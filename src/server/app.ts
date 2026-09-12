@@ -15,7 +15,13 @@ import { AppError, badRequest, notFound, toErrorBody, unprocessable } from './er
 import { JellyfinClient, isValidItemId } from './jellyfin';
 import { PlaybackManager } from './playback';
 import { LinkStore, toLinkSummary } from './store';
-import type { CreateLinkResponse, LinksResponse, LibraryResponse, StatusResponse } from '../shared/contracts';
+import type {
+  CreateLinkResponse,
+  LinksResponse,
+  LibraryResponse,
+  StatusResponse,
+  ViewsResponse,
+} from '../shared/contracts';
 
 const resolveSchema = z.object({
   input: z.string().min(1, 'input is required'),
@@ -250,6 +256,43 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     const limit = clampInt(q.limit, 24, 1, 100, 'limit');
     return requireJellyfin().search(query, startIndex, limit);
   });
+
+  app.get('/api/library/views', async (): Promise<ViewsResponse> => {
+    const items = await requireJellyfin().getViews();
+    return { items };
+  });
+
+  app.get('/api/library/items', async (request): Promise<LibraryResponse> => {
+    const q = request.query as Record<string, unknown>;
+    const parentId = typeof q.parentId === 'string' ? q.parentId.trim() : '';
+    if (!parentId) {
+      throw badRequest('invalid_parent_id', 'parentId is required');
+    }
+    const startIndex = clampInt(q.startIndex, 0, 0, 100000, 'startIndex');
+    const limit = clampInt(q.limit, 24, 1, 100, 'limit');
+    return requireJellyfin().getChildren(normalizeId(parentId), startIndex, limit);
+  });
+
+  app.get('/api/library/shows/:seriesId/seasons', async (request): Promise<LibraryResponse> => {
+    const { seriesId } = request.params as { seriesId: string };
+    return requireJellyfin().getSeasons(normalizeId(seriesId));
+  });
+
+  app.get(
+    '/api/library/shows/:seriesId/seasons/:seasonId/episodes',
+    async (request): Promise<LibraryResponse> => {
+      const { seriesId, seasonId } = request.params as { seriesId: string; seasonId: string };
+      const q = request.query as Record<string, unknown>;
+      const startIndex = clampInt(q.startIndex, 0, 0, 100000, 'startIndex');
+      const limit = clampInt(q.limit, 24, 1, 100, 'limit');
+      return requireJellyfin().getEpisodes(
+        normalizeId(seriesId),
+        normalizeId(seasonId),
+        startIndex,
+        limit,
+      );
+    },
+  );
 
   app.get('/api/items/:id', async (request) => {
     const { id } = request.params as { id: string };

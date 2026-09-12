@@ -14,7 +14,10 @@ import { AddressInfo } from 'node:net';
 
 export const MOVIE_ID = '3f2a1c4e-5b6d-4e8f-9a0b-1c2d3e4f5a6b';
 export const SERIES_ID = 'aa11bb22-cc33-dd44-ee55-ff6677889900';
+export const SEASON_ID = 'bb22cc33-dd44-ee55-ff66-77889900aabb';
 export const EPISODE_ID = '9c8b7a65-4321-4fed-8cba-0123456789ab';
+export const MOVIES_LIBRARY_ID = 'cc33dd44-ee55-ff66-7788-9900aabbccdd';
+export const TV_LIBRARY_ID = 'dd44ee55-ff66-7788-9900-aabbccddeeff';
 export const SOURCE_ID = MOVIE_ID;
 export const API_KEY = 'MOCK-JELLYFIN-API-KEY-do-not-log';
 export const USER_ID = 'd4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f70';
@@ -204,6 +207,18 @@ export class MockJellyfin {
 
     const method = req.method ?? 'GET';
 
+    if (method === 'GET' && path === '/UserViews') {
+      return this.handleViews(res);
+    }
+
+    if (method === 'GET' && /^\/Shows\/[^/]+\/Seasons$/.test(path)) {
+      return this.handleSeasons(res, decodeURIComponent(path.split('/')[2]!));
+    }
+
+    if (method === 'GET' && /^\/Shows\/[^/]+\/Episodes$/.test(path)) {
+      return this.handleEpisodes(res, url, decodeURIComponent(path.split('/')[2]!));
+    }
+
     if (method === 'GET' && (path === '/Items' || /^\/Users\/[^/]+\/Items$/.test(path))) {
       return this.handleLibrary(res, url);
     }
@@ -249,7 +264,25 @@ export class MockJellyfin {
     res.end(JSON.stringify({ error: 'not found' }));
   }
 
+  private handleViews(res: ServerResponse): void {
+    json(res, 200, {
+      Items: [
+        collectionFolderDto(MOVIES_LIBRARY_ID, 'Movies', 'movies', 6),
+        collectionFolderDto(TV_LIBRARY_ID, 'TV Shows', 'tvshows', 1),
+      ],
+      TotalRecordCount: 2,
+      StartIndex: 0,
+    });
+  }
+
   private handleLibrary(res: ServerResponse, url: URL): void {
+    const parentId = url.searchParams.get('parentId') ?? url.searchParams.get('ParentId');
+    if (parentId) {
+      const children = this.childrenOf(parentId);
+      json(res, 200, { Items: children, TotalRecordCount: children.length, StartIndex: 0 });
+      return;
+    }
+
     const search = (url.searchParams.get('SearchTerm') ?? url.searchParams.get('searchTerm') ?? '').toLowerCase();
     const startIndex = Number(url.searchParams.get('StartIndex') ?? url.searchParams.get('startIndex') ?? 0);
     const limit = Number(url.searchParams.get('Limit') ?? url.searchParams.get('limit') ?? 24);
@@ -261,6 +294,36 @@ export class MockJellyfin {
       TotalRecordCount: filtered.length,
       StartIndex: startIndex,
     });
+  }
+
+  private handleSeasons(res: ServerResponse, seriesId: string): void {
+    const items = seriesId === SERIES_ID ? [seasonDto()] : [];
+    json(res, 200, { Items: items, TotalRecordCount: items.length, StartIndex: 0 });
+  }
+
+  private handleEpisodes(res: ServerResponse, url: URL, seriesId: string): void {
+    const seasonId = url.searchParams.get('seasonId') ?? url.searchParams.get('SeasonId');
+    const items =
+      seriesId === SERIES_ID && (!seasonId || seasonId === SEASON_ID) ? [episodeDto()] : [];
+    json(res, 200, { Items: items, TotalRecordCount: items.length, StartIndex: 0 });
+  }
+
+  private childrenOf(parentId: string): unknown[] {
+    switch (parentId) {
+      case MOVIES_LIBRARY_ID:
+        return [
+          movieDto(),
+          ...[1, 2, 3, 4, 5].map((n) => movieDto(`${MOVIE_ID.slice(0, -1)}${n}`, `Catalog Movie ${n}`)),
+        ];
+      case TV_LIBRARY_ID:
+        return [seriesDto()];
+      case SERIES_ID:
+        return [seasonDto()];
+      case SEASON_ID:
+        return [episodeDto()];
+      default:
+        return [];
+    }
   }
 
   private handleItem(res: ServerResponse, _url: URL, id: string): void {
@@ -585,6 +648,34 @@ export function seriesDto() {
     Id: SERIES_ID,
     Name: 'Verification Show',
     Type: 'Series',
+    ProductionYear: 2020,
+    ChildCount: 1,
+    MediaSources: [],
+    MediaStreams: [],
+  };
+}
+
+export function seasonDto() {
+  return {
+    Id: SEASON_ID,
+    Name: 'Season 1',
+    Type: 'Season',
+    SeriesName: 'Verification Show',
+    SeriesId: SERIES_ID,
+    IndexNumber: 1,
+    ChildCount: 1,
+    MediaSources: [],
+    MediaStreams: [],
+  };
+}
+
+export function collectionFolderDto(id: string, name: string, collectionType: string, childCount: number) {
+  return {
+    Id: id,
+    Name: name,
+    Type: 'CollectionFolder',
+    CollectionType: collectionType,
+    ChildCount: childCount,
     MediaSources: [],
     MediaStreams: [],
   };

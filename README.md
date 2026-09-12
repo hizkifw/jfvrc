@@ -98,7 +98,11 @@ Errors are `{ "error": { "code": string, "message": string } }`.
 | `GET` | `/health` | `{status:'ok'}`. |
 | `GET` | `/api/status` | Configured state and sanitized URLs. |
 | `POST` | `/api/resolve` | `{input}` → normalized `ItemDetails`. |
-| `GET` | `/api/library?query=&startIndex=&limit=` | `{items,total}`. |
+| `GET` | `/api/library?query=&startIndex=&limit=` | Recursive search across movies/shows/episodes; `{items,total}`. |
+| `GET` | `/api/library/views` | Top-level libraries; `{items}`. |
+| `GET` | `/api/library/items?parentId=&startIndex=&limit=` | Direct children of a library/folder; `{items,total}`. |
+| `GET` | `/api/library/shows/:seriesId/seasons` | Seasons of a series; `{items,total}`. |
+| `GET` | `/api/library/shows/:seriesId/seasons/:seasonId/episodes?startIndex=&limit=` | Episodes of a season; `{items,total}`. |
 | `GET` | `/api/items/:id` | Normalized `ItemDetails`. |
 | `POST` | `/api/links` | Create a link; returns `{id,url,expiresAt,title}`. |
 | `GET` | `/api/links` | List link summaries (no URLs/tokens). |

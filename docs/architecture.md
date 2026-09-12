@@ -27,12 +27,16 @@ Errors: { error: { code: string, message: string } } with safe messages and appr
 GET /health -> {status:'ok'} (no secrets).
 GET /api/status -> {configured:boolean, jellyfinUrl:string, publicBaseUrl:string} (URL without credentials).
 POST /api/resolve {input:string} -> ItemDetails.
-GET /api/library?query=&startIndex=0&limit=24 -> {items:MediaItem[],total:number}; recursive movie/episode search, stable pagination.
+GET /api/library?query=&startIndex=0&limit=24 -> {items:MediaItem[],total:number}; recursive movie/series/episode search, stable pagination.
+GET /api/library/views -> {items:MediaItem[]}; top-level user libraries (Jellyfin UserViews).
+GET /api/library/items?parentId=&startIndex=0&limit=24 -> {items:MediaItem[],total:number}; direct children of a library/folder (recursive=false), e.g. movies and series.
+GET /api/library/shows/:seriesId/seasons -> {items:MediaItem[],total:number}; Jellyfin Shows/{id}/Seasons.
+GET /api/library/shows/:seriesId/seasons/:seasonId/episodes?startIndex=0&limit=24 -> {items:MediaItem[],total:number}; Jellyfin Shows/{id}/Episodes?seasonId=.
 GET /api/items/:id -> ItemDetails.
 POST /api/links {itemId,mediaSourceId,audioStreamIndex?:number,subtitleStreamIndex:number,preset:'1080p'|'720p',startSeconds:number,expiresInHours:number} -> {id,url,expiresAt,title}.
 GET /api/links -> {links:LinkSummary[]}.
 DELETE /api/links/:id -> 204 (revoke).
-MediaItem: {id:string,name:string,type:'Movie'|'Episode',year?:number,seriesName?:string,seasonNumber?:number,episodeNumber?:number,overview?:string,runTimeSeconds?:number}.
+MediaItem: {id:string,name:string,type:'Movie'|'Episode'|'Series'|'Season'|'Folder'|'CollectionFolder'|'BoxSet'|'Video',year?:number,seriesName?:string,seriesId?:string,seasonNumber?:number,episodeNumber?:number,overview?:string,runTimeSeconds?:number,childCount?:number,collectionType?:string}.
 ItemDetails: MediaItem & {mediaSources:MediaSource[]}.
 MediaSource: {id:string,name:string,audioTracks:Track[],subtitleTracks:Track[]}.
 Track: {index:number,label:string,language?:string,codec?:string,isDefault?:boolean,isForced?:boolean}.
@@ -46,7 +50,7 @@ Frontend: src/client/**, index.html, vite.config.ts, tsconfig.client.json only. 
 Independent verification agent should run typecheck/tests/build and inspect critical trust/media boundaries, adding regression tests for actual findings. Mock upstream should exercise nested master/media manifests, all URI attributes, query and base path resolution, no token leaks, selected subtitle burn-in negotiation, range/binary passthrough, aborts/timeouts, expiry/revoke including existing sessions, auth and forged resource/session access, redirect/path rejection, cleanup scoping, source/track validation, persisted links after restart, simultaneous clients. Do not assert success solely against mocks shaped exactly like the implementation: check Jellyfin primary source / documented DTOs. A live smoke-test guide must cover VLC and target VRChat PC/Quest player, seek/reopen, concurrent consumers, external subtitle formats, CPU/GPU burn-in, reverse proxy and HTTPS; clearly mark live tests not run without credentials/client access.
 
 ## Future iterations
-Hierarchical seasons browser/artwork; real Jellyfin user login and encrypted stored credentials; multiple server connections; independent playback sessions or pre-generated HLS; playback progress feedback from controlled clients; metrics; adaptive profiles; rate/concurrency tuning. Keep HTTP and storage boundaries narrow so these do not require rewriting the core proxy.
+Series/season/episode hierarchy is implemented as a drill-down browser (library -> series -> season -> episodes) backed by `/api/library/views` and `/api/library/items`. Remaining: artwork/thumbnails (deferred to avoid adding an authenticated image proxy surface), real Jellyfin user login and encrypted stored credentials; multiple server connections; independent playback sessions or pre-generated HLS; playback progress feedback from controlled clients; metrics; adaptive profiles; rate/concurrency tuning. Keep HTTP and storage boundaries narrow so these do not require rewriting the core proxy.
 
 ## Primary references (checked 2026-09-12)
 - https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Api/Controllers/MediaInfoController.cs

@@ -2,6 +2,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 export const ITEM_ID = '11111111-1111-1111-1111-111111111111';
 export const MEDIA_SOURCE_ID = 'src-main';
+export const SERIES_ID = '22222222-2222-2222-2222-222222222222';
+export const SEASON_ID = '33333333-3333-3333-3333-333333333333';
+export const TV_LIBRARY_ID = '44444444-4444-4444-4444-444444444444';
+export const MOVIES_LIBRARY_ID = '55555555-5555-5555-5555-555555555555';
 
 const SEGMENT_BYTES = Buffer.from('0123456789abcdefghijklmnopqrstuvwxyzSEGMENTDATA');
 
@@ -45,6 +49,43 @@ function itemPayload() {
   };
 }
 
+function episodePayload() {
+  return {
+    Id: ITEM_ID,
+    Name: 'Mock Pilot',
+    Type: 'Episode',
+    SeriesName: 'Mock Show',
+    ParentIndexNumber: 1,
+    IndexNumber: 1,
+    RunTimeTicks: 2_700_000_000,
+    MediaSources: itemPayload().MediaSources,
+  };
+}
+
+function seriesPayload() {
+  return { Id: SERIES_ID, Name: 'Mock Show', Type: 'Series', ChildCount: 1 };
+}
+
+function seasonPayload() {
+  return {
+    Id: SEASON_ID,
+    Name: 'Season 1',
+    Type: 'Season',
+    SeriesName: 'Mock Show',
+    SeriesId: SERIES_ID,
+    IndexNumber: 1,
+    ChildCount: 1,
+  };
+}
+
+function childrenOf(parentId: string): unknown[] {
+  if (parentId === MOVIES_LIBRARY_ID) return [itemPayload()];
+  if (parentId === TV_LIBRARY_ID) return [seriesPayload()];
+  if (parentId === SERIES_ID) return [seasonPayload()];
+  if (parentId === SEASON_ID) return [episodePayload()];
+  return [];
+}
+
 export async function startMockJellyfin(basePath = ''): Promise<MockJellyfin> {
   const app = Fastify({ logger: false, exposeHeadRoutes: false });
   const state: Omit<MockJellyfin, 'url' | 'app' | 'stop'> = {
@@ -68,13 +109,38 @@ export async function startMockJellyfin(basePath = ''): Promise<MockJellyfin> {
       return itemPayload();
     });
 
+    instance.get(p('/UserViews'), async () => ({
+      Items: [
+        { Id: MOVIES_LIBRARY_ID, Name: 'Movies', Type: 'CollectionFolder', CollectionType: 'movies', ChildCount: 1 },
+        { Id: TV_LIBRARY_ID, Name: 'TV Shows', Type: 'CollectionFolder', CollectionType: 'tvshows', ChildCount: 1 },
+      ],
+      TotalRecordCount: 2,
+    }));
+
     instance.get(p('/Items'), async (request) => {
-      const q = request.query as { searchTerm?: string };
+      const q = request.query as { searchTerm?: string; parentId?: string };
+      if (q.parentId) {
+        return { Items: childrenOf(q.parentId), TotalRecordCount: 1 };
+      }
       const all = !!q.searchTerm;
       return {
         Items: all ? [] : [itemPayload()],
         TotalRecordCount: all ? (String(q.searchTerm).toLowerCase() === 'mock' ? 1 : 0) : 1,
       };
+    });
+
+    instance.get(p('/Shows/:seriesId/Seasons'), async (request) => {
+      const { seriesId } = request.params as { seriesId: string };
+      const items = seriesId === SERIES_ID ? [seasonPayload()] : [];
+      return { Items: items, TotalRecordCount: items.length };
+    });
+
+    instance.get(p('/Shows/:seriesId/Episodes'), async (request) => {
+      const { seriesId } = request.params as { seriesId: string };
+      const q = request.query as { seasonId?: string };
+      const items =
+        seriesId === SERIES_ID && (!q.seasonId || q.seasonId === SEASON_ID) ? [episodePayload()] : [];
+      return { Items: items, TotalRecordCount: items.length };
     });
 
     instance.post(p('/Items/:id/PlaybackInfo'), async (request) => {

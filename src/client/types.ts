@@ -15,6 +15,7 @@ export type {
   CreateLinkResponse,
   ResolveRequest,
   LibraryResponse,
+  ViewsResponse,
   LinksResponse,
   StatusResponse,
   ApiErrorBody,

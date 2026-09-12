@@ -1,5 +1,5 @@
 import type { AppConfig, JellyfinConfig } from './config';
-import type { ItemDetails, MediaItem, MediaSource, Preset, Track } from '../shared/contracts';
+import type { ItemDetails, ItemType, MediaItem, MediaSource, Preset, Track } from '../shared/contracts';
 import { badRequest, notFound, unprocessable, upstreamError } from './errors';
 import { apiUrl, stripSensitiveParams, validateUpstreamUrl } from './urls';
 
@@ -103,8 +103,12 @@ interface JfItem {
   Type?: string;
   ProductionYear?: number;
   SeriesName?: string;
+  SeriesId?: string;
   IndexNumber?: number;
   ParentIndexNumber?: number;
+  ChildCount?: number;
+  RecursiveItemCount?: number;
+  CollectionType?: string;
   Overview?: string;
   RunTimeTicks?: number;
   MediaSources?: JfMediaSource[] | null;
@@ -248,19 +252,31 @@ function mapTrack(stream: JfMediaStream): Track {
 }
 
 export function mapItem(raw: JfItem): ItemDetails {
-  const type = raw.Type === 'Episode' ? 'Episode' : 'Movie';
+  const type = mapItemType(raw.Type);
   const item: MediaItem = {
     id: String(raw.Id ?? ''),
     name: raw.Name ?? 'Unknown',
     type,
     ...(raw.ProductionYear ? { year: raw.ProductionYear } : {}),
     ...(raw.SeriesName ? { seriesName: raw.SeriesName } : {}),
+    ...(raw.SeriesId ? { seriesId: String(raw.SeriesId) } : {}),
     ...(typeof raw.ParentIndexNumber === 'number' ? { seasonNumber: raw.ParentIndexNumber } : {}),
-    ...(typeof raw.IndexNumber === 'number' ? { episodeNumber: raw.IndexNumber } : {}),
+    ...(type === 'Season' && typeof raw.IndexNumber === 'number'
+      ? { seasonNumber: raw.IndexNumber }
+      : {}),
+    ...(type === 'Episode' && typeof raw.IndexNumber === 'number'
+      ? { episodeNumber: raw.IndexNumber }
+      : {}),
     ...(raw.Overview ? { overview: raw.Overview } : {}),
     ...(typeof raw.RunTimeTicks === 'number'
       ? { runTimeSeconds: Math.round(raw.RunTimeTicks / 10_000_000) }
       : {}),
+    ...(typeof raw.ChildCount === 'number'
+      ? { childCount: raw.ChildCount }
+      : typeof raw.RecursiveItemCount === 'number'
+        ? { childCount: raw.RecursiveItemCount }
+        : {}),
+    ...(raw.CollectionType ? { collectionType: raw.CollectionType } : {}),
   };
   const sources: MediaSource[] = (raw.MediaSources ?? []).map((source, i) => {
     const streams = source.MediaStreams ?? [];
@@ -272,6 +288,32 @@ export function mapItem(raw: JfItem): ItemDetails {
     };
   });
   return { ...item, mediaSources: sources };
+}
+
+/**
+ * Normalize a Jellyfin BaseItemKind into our narrow union. Unknown kinds (e.g.
+ * music or photo items) collapse to `Folder` so the browser can still navigate
+ * into them rather than mislabeling them as playable media.
+ */
+export function mapItemType(raw: string | undefined): ItemType {
+  switch (raw) {
+    case 'Movie':
+      return 'Movie';
+    case 'Episode':
+      return 'Episode';
+    case 'Series':
+      return 'Series';
+    case 'Season':
+      return 'Season';
+    case 'BoxSet':
+      return 'BoxSet';
+    case 'Video':
+      return 'Video';
+    case 'CollectionFolder':
+      return 'CollectionFolder';
+    default:
+      return 'Folder';
+  }
 }
 
 const ITEM_ID_RE = /^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -402,7 +444,7 @@ export class JellyfinClient {
     const params = new URLSearchParams({
       userId: this.jellyfin.userId,
       recursive: 'true',
-      includeItemTypes: 'Movie,Episode',
+      includeItemTypes: 'Movie,Series,Episode',
       startIndex: String(startIndex),
       limit: String(limit),
       sortBy: 'SortName',
@@ -414,6 +456,89 @@ export class JellyfinClient {
       params.set('searchTerm', query.trim());
     }
     const url = apiUrl(this.jellyfin, `/Items?${params.toString()}`);
+    const raw = await this.getJson<JfQueryResult>(url, deviceId);
+    const items = (raw.Items ?? []).map((item) => mapItem(item));
+    return { items, total: raw.TotalRecordCount ?? items.length };
+  }
+
+  /** Top-level user libraries (Jellyfin "views"), e.g. Movies and TV Shows. */
+  async getViews(deviceId?: string): Promise<MediaItem[]> {
+    const url = apiUrl(this.jellyfin, `/UserViews?userId=${this.jellyfin.userId}`);
+    const raw = await this.getJson<JfQueryResult>(url, deviceId);
+    return (raw.Items ?? []).map((item) => mapItem(item));
+  }
+
+  /**
+   * Direct children of a folder-like item. With `recursive=false` Jellyfin
+   * returns the immediate level: a library yields movies/series and a plain
+   * folder yields its contents.
+   */
+  async getChildren(
+    parentId: string,
+    startIndex: number,
+    limit: number,
+    deviceId?: string,
+  ): Promise<{ items: MediaItem[]; total: number }> {
+    if (!isValidItemId(parentId)) {
+      throw badRequest('invalid_item_id', 'Item id must be a UUID or 32 character hex string');
+    }
+    const params = new URLSearchParams({
+      userId: this.jellyfin.userId,
+      parentId,
+      recursive: 'false',
+      startIndex: String(startIndex),
+      limit: String(limit),
+      enableImages: 'false',
+      enableTotalRecordCount: 'true',
+    });
+    const url = apiUrl(this.jellyfin, `/Items?${params.toString()}`);
+    const raw = await this.getJson<JfQueryResult>(url, deviceId);
+    const items = (raw.Items ?? []).map((item) => mapItem(item));
+    return { items, total: raw.TotalRecordCount ?? items.length };
+  }
+
+  /**
+   * Seasons of a series. The dedicated Shows endpoint resolves specials and
+   * episodes that live directly in the series folder more reliably than a raw
+   * `/Items?parentId=` query.
+   */
+  async getSeasons(seriesId: string, deviceId?: string): Promise<{ items: MediaItem[]; total: number }> {
+    if (!isValidItemId(seriesId)) {
+      throw badRequest('invalid_item_id', 'Item id must be a UUID or 32 character hex string');
+    }
+    const params = new URLSearchParams({
+      userId: this.jellyfin.userId,
+      enableImages: 'false',
+    });
+    const url = apiUrl(this.jellyfin, `/Shows/${encodeURIComponent(seriesId)}/Seasons?${params.toString()}`);
+    const raw = await this.getJson<JfQueryResult>(url, deviceId);
+    const items = (raw.Items ?? []).map((item) => mapItem(item));
+    return { items, total: raw.TotalRecordCount ?? items.length };
+  }
+
+  /** Episodes of a single season, ordered by Jellyfin's default episode order. */
+  async getEpisodes(
+    seriesId: string,
+    seasonId: string,
+    startIndex: number,
+    limit: number,
+    deviceId?: string,
+  ): Promise<{ items: MediaItem[]; total: number }> {
+    if (!isValidItemId(seriesId) || !isValidItemId(seasonId)) {
+      throw badRequest('invalid_item_id', 'Item id must be a UUID or 32 character hex string');
+    }
+    const params = new URLSearchParams({
+      userId: this.jellyfin.userId,
+      seasonId,
+      startIndex: String(startIndex),
+      limit: String(limit),
+      enableImages: 'false',
+      enableTotalRecordCount: 'true',
+    });
+    const url = apiUrl(
+      this.jellyfin,
+      `/Shows/${encodeURIComponent(seriesId)}/Episodes?${params.toString()}`,
+    );
     const raw = await this.getJson<JfQueryResult>(url, deviceId);
     const items = (raw.Items ?? []).map((item) => mapItem(item));
     return { items, total: raw.TotalRecordCount ?? items.length };

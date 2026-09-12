@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { ITEM_ID, MEDIA_SOURCE_ID } from './mock-jellyfin';
+import { ITEM_ID, MEDIA_SOURCE_ID, MOVIES_LIBRARY_ID, SEASON_ID, SERIES_ID, TV_LIBRARY_ID } from './mock-jellyfin';
 import { findResource, resourcePaths, setup, teardown, type TestContext } from './helpers';
 
 let ctx: TestContext;
@@ -124,6 +124,35 @@ describe('resolve and library', () => {
       headers: ctx.auth,
     });
     expect(bad.statusCode).toBe(400);
+  });
+
+  it('browses libraries into series, seasons and episodes', async () => {
+    ctx = await setup();
+    const get = (url: string) =>
+      ctx.built.app.inject({ method: 'GET', url, headers: ctx.auth });
+
+    const views = await get('/api/library/views');
+    expect(views.statusCode).toBe(200);
+    const libraries = views.json().items as Array<{ id: string; type: string }>;
+    expect(libraries.map((l) => l.type)).toEqual(['CollectionFolder', 'CollectionFolder']);
+
+    const movies = await get(`/api/library/items?parentId=${MOVIES_LIBRARY_ID}`);
+    expect(movies.statusCode).toBe(200);
+    expect(movies.json().items[0]).toMatchObject({ type: 'Movie' });
+
+    const shows = await get(`/api/library/items?parentId=${TV_LIBRARY_ID}`);
+    expect(shows.json().items[0]).toMatchObject({ id: SERIES_ID, type: 'Series' });
+
+    const seasons = await get(`/api/library/shows/${SERIES_ID}/seasons`);
+    expect(seasons.json().items[0]).toMatchObject({ type: 'Season' });
+
+    const episodes = await get(
+      `/api/library/shows/${SERIES_ID}/seasons/${SEASON_ID}/episodes`,
+    );
+    expect(episodes.json().items[0]).toMatchObject({ type: 'Episode', episodeNumber: 1 });
+
+    const invalid = await get('/api/library/items?parentId=nope');
+    expect(invalid.statusCode).toBe(400);
   });
 });
 

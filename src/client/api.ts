@@ -7,6 +7,7 @@ import type {
   LinkSummary,
   MediaItem,
   StatusResponse,
+  ViewsResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -99,6 +100,38 @@ export const api = {
     return request(`/api/library?${params.toString()}`);
   },
 
+  libraryViews(): Promise<ViewsResponse> {
+    return request('/api/library/views');
+  },
+
+  libraryItems(parentId: string, startIndex: number, limit: number): Promise<LibraryResponse> {
+    const params = new URLSearchParams({
+      parentId,
+      startIndex: String(startIndex),
+      limit: String(limit),
+    });
+    return request(`/api/library/items?${params.toString()}`);
+  },
+
+  librarySeasons(seriesId: string): Promise<LibraryResponse> {
+    return request(`/api/library/shows/${encodeURIComponent(seriesId)}/seasons`);
+  },
+
+  libraryEpisodes(
+    seriesId: string,
+    seasonId: string,
+    startIndex: number,
+    limit: number,
+  ): Promise<LibraryResponse> {
+    const params = new URLSearchParams({
+      startIndex: String(startIndex),
+      limit: String(limit),
+    });
+    return request(
+      `/api/library/shows/${encodeURIComponent(seriesId)}/seasons/${encodeURIComponent(seasonId)}/episodes?${params.toString()}`,
+    );
+  },
+
   item(id: string): Promise<ItemDetails> {
     return request(`/api/items/${encodeURIComponent(id)}`);
   },
@@ -132,7 +165,8 @@ export function itemLabel(item: MediaItem): string {
     const series = item.seriesName ?? 'Unknown series';
     const season = item.seasonNumber !== undefined ? `S${item.seasonNumber}` : 'S?';
     const episode = item.episodeNumber !== undefined ? `E${item.episodeNumber}` : 'E?';
-    parts.push(`${series} ${season}${episode}`);
+    parts.push(`${series} · ${season}${episode}`);
+    if (item.name) parts.push(item.name);
   } else {
     parts.push(item.name);
   }
