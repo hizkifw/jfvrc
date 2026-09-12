@@ -1,0 +1,65 @@
+# JFVRC architecture
+
+## Purpose and deployment
+A self-hosted gateway converts a Jellyfin movie/episode details link into a revocable HLS URL usable without cookies or custom headers. Jellyfin alone transcodes and burns subtitles; this service negotiates playback and relays manifests/media. Target one household/operator and one configured Jellyfin server. No live TV, uploads, multi-tenant accounts, CDN or local ffmpeg in v1. Docker alongside Jellyfin with an external HTTPS reverse proxy is the preferred deployment. No public deployment or real-server mutation is needed during implementation.
+
+## Stack
+Node 22+, TypeScript, Fastify 5, React + Vite, SQLite (better-sqlite3), Zod, Vitest. A single npm project builds a browser bundle and backend; Fastify serves both. Use npm lockfile, Docker multistage build, Compose and a persistent /data volume. Small explicit Jellyfin REST adapter using fetch, rather than exposing SDK DTOs throughout the app. SQLite holds durable link definitions; active playback and resolved upstream resource maps are ephemeral. Single process v1; horizontal scaling requires shared session state or sticky routing later.
+
+## Trust boundaries
+Configure JELLYFIN_URL (may include /jellyfin prefix), JELLYFIN_API_KEY, JELLYFIN_USER_ID, ADMIN_TOKEN, PUBLIC_BASE_URL, DATABASE_PATH, PORT and HOST through environment. Credentials are server-only. Require operator bearer auth on all /api routes except health. The UI asks for the admin token, keeps it in memory, and sends Authorization header. Never expose Jellyfin credentials, URLs containing credentials, raw upstream error bodies, local media paths, or tokens in access logs. Disable request URL logging or sanitize it. The example Jellyfin hostname is input context, not permission to probe the private library.
+
+Playback URLs contain high-entropy opaque bearer tokens, authorize only the saved item/settings, have bounded expiration (default 24h, maximum 7 days), and are revocable. Explain that anyone with the link can watch until expiration/revocation. Keep token hashes in durable storage; return full URL only at creation. Listing links need not reproduce the URL. Every resource request rechecks its parent link expiration/revocation. Browser admin APIs have no permissive cross-origin policy; media endpoints allow GET/HEAD/OPTIONS cross-origin for players. PUBLIC_BASE_URL is explicit, never derived from arbitrary Host or forwarded headers.
+
+Do not accept arbitrary proxy targets. Pasted URL must match configured Jellyfin origin and web path beneath configured base path. Parse id from fragment query (or an id input), validate UUID/32-hex. serverId in the example is informational; it is not a credential and should not select another upstream. Upstream manifest references must resolve to configured origin and base path and allowed Jellyfin video resource namespace for the selected item. Reject userinfo, unsafe schemes, external origins, path escapes and unsafe redirects. Support relative, root-relative and absolute references while preserving original query semantics server-side. All credentialed fetches must validate redirects or reject them. Resource URLs seen by clients contain only random identifiers mapped server-side to validated upstream URLs, never encoded upstream URLs.
+
+## Playback flow
+1. Operator enters URL or browses/searches movies and episodes. Backend returns a sanitized item with media sources and audio/subtitle stream indices.
+2. Operator selects media source, audio, subtitles (None = -1), compatibility preset and optional start seconds. Validate actual selected stream types/source ownership and duration/ranges server-side. V1 presets: compatible 1080p / 8 Mbps and 720p / 4 Mbps, H.264 8-bit yuv420-compatible profile constraints + AAC stereo in MPEG-TS HLS. Prefer conservative level/profile; no adaptive bitrate ladder in v1.
+3. POST /api/links persists item + immutable playback settings and expiry. It does not start a transcode.
+4. GET /s/:token/master.m3u8 opens a new playback session. Negotiate POST Items/{itemId}/PlaybackInfo using configured user, explicit source/tracks, EnableDirectPlay=false, EnableDirectStream=false, EnableTranscoding=true, no video/audio copy, AlwaysBurnInSubtitleWhenTranscoding=true when selected, subtitle delivery Encode device profiles, HLS/TS H.264/AAC profile with bitrate/resolution/channel constraints. Use negotiated TranscodingUrl and PlaySessionId; never guess an unverified URL as fallback. Reject unsupported sources/negotiation failures clearly. Preserve Jellyfin parameters. For selected subtitles ensure actual negotiated URL requests SubtitleMethod=Encode and selected index; ensure no video copy. No subtitles explicitly -1.
+5. Fetch and rewrite negotiated master manifest into our origin's session/resource URLs; variant playlists are recursively rewritten, and segment/key/init-map/URI-bearing tag references also stay on our service. Use a real HLS-aware strategy, preserving tags/timing/newlines and quoted attribute contents. Reject unsupported dangerous URI mechanisms rather than leaking original URLs. Resource mapping is deduplicated and bounded per session. Do not forward upstream Location or credential-bearing headers.
+6. GET /s/:token/p/:sessionId/:resourceId/:filename serves the mapped resource; filename preserves .m3u8/.ts/.mp4/etc usefulness. Playlist text is bounded and rewritten, binary bodies stream with backpressure and disconnect cancellation. Handle HEAD without starting a transcode on entry (return playlist content type only), ranges and 206/416, appropriate content types, timeouts and upstream failures. Manifests no-store; do not relay stale lengths/encoding after rewriting. Cookies/custom authorization are never required for playback URLs.
+7. Sessions have unique device IDs and Jellyfin play session IDs. New entry GET creates independent session so multiple consumers do not interfere with seeking. A repeating entry request may create a session; cap global active sessions and clean idle ones. No shared transcoding or synchronization guarantee in v1. Idle TTL configurable, sensible default 10 minutes since last request, maximum lifetime bounded by link. Revoke stops child sessions. Shutdown/idle cleanup best-effort calls DELETE Videos/ActiveEncodings with DeviceId and PlaySessionId, narrowly scoped. Track in-flight streams so cleanup does not cut off active transfers. Failures in cleanup cannot crash service. Persistent links survive restart; old session URLs do not, reopen entry link. Playback reporting may be omitted in v1 rather than falsely inferring watched position from segment reads.
+
+## API contract (normalized JSON)
+Errors: { error: { code: string, message: string } } with safe messages and appropriate HTTP codes.
+GET /health -> {status:'ok'} (no secrets).
+GET /api/status -> {configured:boolean, jellyfinUrl:string, publicBaseUrl:string} (URL without credentials).
+POST /api/resolve {input:string} -> ItemDetails.
+GET /api/library?query=&startIndex=0&limit=24 -> {items:MediaItem[],total:number}; recursive movie/episode search, stable pagination.
+GET /api/items/:id -> ItemDetails.
+POST /api/links {itemId,mediaSourceId,audioStreamIndex?:number,subtitleStreamIndex:number,preset:'1080p'|'720p',startSeconds:number,expiresInHours:number} -> {id,url,expiresAt,title}.
+GET /api/links -> {links:LinkSummary[]}.
+DELETE /api/links/:id -> 204 (revoke).
+MediaItem: {id:string,name:string,type:'Movie'|'Episode',year?:number,seriesName?:string,seasonNumber?:number,episodeNumber?:number,overview?:string,runTimeSeconds?:number}.
+ItemDetails: MediaItem & {mediaSources:MediaSource[]}.
+MediaSource: {id:string,name:string,audioTracks:Track[],subtitleTracks:Track[]}.
+Track: {index:number,label:string,language?:string,codec?:string,isDefault?:boolean,isForced?:boolean}.
+LinkSummary: {id:string,title:string,createdAt:string,expiresAt:string,revoked:boolean,preset:string,subtitleStreamIndex:number}. Times are ISO strings. Shared contracts live src/shared/contracts.ts; backend owns this file. Frontend uses type-only imports when available or local types matching this contract until integration.
+
+## Modules / ownership
+Backend: src/server/{config,app,index,jellyfin,playback,manifest,store,...}.ts, src/shared/contracts.ts, package.json, lockfile, tsconfig server/root, tests/server/**, .env.example, Dockerfile, compose.yaml, README.md. Backend exports an app factory accepting config/dependencies so mock-Jellyfin integration tests can run against real HTTP without credentials.
+Frontend: src/client/**, index.html, vite.config.ts, tsconfig.client.json only. Polished simple dark UI branded JFVRC, paste-and-resolve primary, library tab, track/preset selection, create/copy link, expiration/revoke list, loading/error/empty states, responsive accessible forms. No fake data presented as real. Vite dev proxies /api,/health,/s to localhost:3000; build goes dist/client. Fastify production serves dist/client with SPA fallback restricted away from API/media paths. Avoid images in v1; they add authenticated proxy surface with little value.
+
+## Verification / acceptance
+Independent verification agent should run typecheck/tests/build and inspect critical trust/media boundaries, adding regression tests for actual findings. Mock upstream should exercise nested master/media manifests, all URI attributes, query and base path resolution, no token leaks, selected subtitle burn-in negotiation, range/binary passthrough, aborts/timeouts, expiry/revoke including existing sessions, auth and forged resource/session access, redirect/path rejection, cleanup scoping, source/track validation, persisted links after restart, simultaneous clients. Do not assert success solely against mocks shaped exactly like the implementation: check Jellyfin primary source / documented DTOs. A live smoke-test guide must cover VLC and target VRChat PC/Quest player, seek/reopen, concurrent consumers, external subtitle formats, CPU/GPU burn-in, reverse proxy and HTTPS; clearly mark live tests not run without credentials/client access.
+
+## Future iterations
+Hierarchical seasons browser/artwork; real Jellyfin user login and encrypted stored credentials; multiple server connections; optional session sharing with explicit seek semantics; playback progress feedback from controlled clients; metrics; adaptive profiles; rate/concurrency tuning. Keep HTTP and storage boundaries narrow so these do not require rewriting the core proxy.
+
+## Primary references (checked 2026-09-12)
+- https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Api/Controllers/MediaInfoController.cs
+- https://github.com/jellyfin/jellyfin/blob/master/Jellyfin.Api/Controllers/DynamicHlsController.cs
+- https://typescript-sdk.jellyfin.org/interfaces/generated-client.PlaybackInfoDto.html
+- https://jellyfin.org/docs/general/clients/codec-support/
+- https://creators.vrchat.com/worlds/udon/video-players/
+- https://creators.vrchat.com/worlds/udon/video-players/www-whitelist/
+VRChat compatibility is a target requiring client smoke tests, not a promise: custom host trust settings apply and public/group-public instances can additionally require world-level allowed domains.
+
+## Implementation clarifications from independent source review
+- Jellyfin's negotiated TranscodingUrl may be root-relative to its API root even when hosted under a base path. Resolve this initial URL with the configured base path; subsequent manifest references use normal resolution against the actual upstream playlist URL. Test both independently.
+- Strip upstream credential query parameters case-insensitively and use `Authorization: MediaBrowser ... Token="..."` headers. Do not rely on legacy-gated X-Emby-Token. Explicitly pass configured UserId.
+- Set `EnableSubtitlesInManifest=false` and disable trickplay on the upstream master. Empty SubtitleProfiles are acceptable: Encode is Jellyfin's fallback when no embedded/external/HLS subtitle profile matches. Continue explicitly sending -1 for None to prevent default subtitles; an independent review's suggestion to omit the index must NOT be followed without proof that defaults are suppressed.
+- The negotiated DeviceId may differ from the proposed one under API-key authentication. Scope cleanup to the effective DeviceId actually used in playback AND returned PlaySessionId, or consistently override the playback DeviceId to our unique session device ID and verify propagation. Never stop by device alone.
+- See .tasks/design-review.md for the primary-source audit; its findings are review inputs, not unquestioned requirements. Integration verification must reconcile these with actual implementation and regression tests.
