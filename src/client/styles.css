@@ -602,8 +602,9 @@ button:disabled {
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
+  align-items: start;
 }
 
 .item-card {
@@ -643,6 +644,43 @@ button:disabled {
 
 .item-card-browse:hover:not(:disabled) .item-chevron {
   color: var(--accent);
+}
+
+.thumb {
+  display: block;
+  width: 100%;
+  object-fit: cover;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: var(--surface);
+  margin-bottom: 8px;
+}
+
+.thumb-poster {
+  aspect-ratio: 2 / 3;
+}
+
+.thumb-wide {
+  aspect-ratio: 16 / 9;
+}
+
+.thumb-fallback {
+  background: linear-gradient(135deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border);
+}
+
+.thumb-loading {
+  background: linear-gradient(100deg, var(--surface-2) 30%, var(--surface) 50%, var(--surface-2) 70%);
+  background-size: 200% 100%;
+  animation: thumb-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes thumb-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
 }
 
 .item-type {
@@ -802,7 +840,8 @@ button:disabled {
 
 @media (prefers-reduced-motion: reduce) {
   .spinner-dot,
-  .progress {
+  .progress,
+  .thumb-loading {
     animation: none;
   }
 }

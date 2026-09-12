@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { api, errorMessage } from '../api';
 import { formatRuntime } from '../format';
 import type { ItemDetails, MediaType, MediaItem } from '../types';
+import { Thumbnail } from './Thumbnail';
 import { EmptyState, ErrorBanner, Spinner } from './ui';
 
 const PAGE_SIZE = 24;
@@ -35,6 +36,19 @@ const TYPE_LABELS: Record<MediaType, string> = {
   Video: 'Video',
 };
 
+/** Movies, series and seasons use portrait posters; episodes use landscape stills. */
+const POSTER_TYPES: ReadonlySet<MediaType> = new Set<MediaType>([
+  'Movie',
+  'Series',
+  'Season',
+  'BoxSet',
+  'CollectionFolder',
+]);
+
+function thumbnailVariant(type: MediaType): 'poster' | 'wide' {
+  return POSTER_TYPES.has(type) ? 'poster' : 'wide';
+}
+
 function isBrowsable(type: MediaType): boolean {
   return BROWSE_TYPES.has(type);
 }
@@ -57,6 +71,20 @@ function subtitleFor(item: MediaItem, searching: boolean): string | null {
 function childLabel(item: MediaItem): string | null {
   if (!item.childCount) return null;
   return `${item.childCount} ${item.childCount === 1 ? 'item' : 'items'}`;
+}
+
+function imagePathFor(item: MediaItem): string | null {
+  const size =
+    thumbnailVariant(item.type) === 'poster'
+      ? { width: 300, height: 450 }
+      : { width: 400, height: 225 };
+  if (item.imageTag) {
+    return api.imagePath(item.id, { tag: item.imageTag, ...size });
+  }
+  if (item.backdropTag) {
+    return api.imagePath(item.id, { type: 'Backdrop', index: 0, tag: item.backdropTag, ...size });
+  }
+  return null;
 }
 
 export interface LibraryNavigation {
@@ -351,6 +379,8 @@ export function LibraryPanel({
               const subtitle = subtitleFor(item, searching);
               const children = childLabel(item);
               const runtime = formatRuntime(item.runTimeSeconds);
+              const imagePath = imagePathFor(item);
+              const variant = thumbnailVariant(item.type);
               return (
                 <li key={item.id}>
                   <button
@@ -360,6 +390,18 @@ export function LibraryPanel({
                     disabled={openId === item.id}
                     aria-busy={openId === item.id}
                   >
+                    {imagePath ? (
+                      <Thumbnail path={imagePath} alt="" variant={variant} />
+                    ) : (
+                      <span
+                        className={
+                          variant === 'poster'
+                            ? 'thumb thumb-poster thumb-fallback'
+                            : 'thumb thumb-wide thumb-fallback'
+                        }
+                        aria-hidden="true"
+                      />
+                    )}
                     <span className="item-type">{TYPE_LABELS[item.type]}</span>
                     <span className="item-name">{item.name}</span>
                     {subtitle ? <span className="item-sub">{subtitle}</span> : null}

@@ -34,6 +34,7 @@ function itemPayload() {
     ProductionYear: 2024,
     Overview: 'A mock movie used by integration tests.',
     RunTimeTicks: 7_200_000_000,
+    ImageTags: { Primary: 'mock-primary-tag' },
     MediaSources: [
       {
         Id: MEDIA_SOURCE_ID,
@@ -107,6 +108,16 @@ export async function startMockJellyfin(basePath = ''): Promise<MockJellyfin> {
         return { error: 'not found' };
       }
       return itemPayload();
+    });
+
+    instance.get(p('/Items/:id/Images/:type'), async (request, reply) => {
+      const { id } = request.params as { id: string };
+      if (id.toLowerCase().replace(/-/g, '') !== ITEM_ID.replace(/-/g, '')) {
+        reply.code(404);
+        return { error: 'not found' };
+      }
+      reply.type('image/jpeg');
+      return Buffer.from('MOCK-IMAGE-BYTES');
     });
 
     instance.get(p('/UserViews'), async () => ({

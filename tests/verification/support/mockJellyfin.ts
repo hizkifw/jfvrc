@@ -27,6 +27,9 @@ export const SUBTITLE_ENCODE_INDEX = 2;
 export const SUBTITLE_SECONDARY_INDEX = 3;
 export const AUDIO_INDEX = 1;
 
+/** Tiny stand-in artwork returned by the mock's Images endpoint. */
+export const IMAGE_BYTES = Buffer.from('MOCK-IMAGE-BYTES');
+
 export interface RecordedRequest {
   method: string;
   path: string;
@@ -219,6 +222,11 @@ export class MockJellyfin {
       return this.handleEpisodes(res, url, decodeURIComponent(path.split('/')[2]!));
     }
 
+    const imageMatch = /^\/Items\/([^/]+)\/Images\/([^/]+)(?:\/([^/]+))?$/.exec(path);
+    if (method === 'GET' && imageMatch) {
+      return this.handleImage(res, url, decodeURIComponent(imageMatch[1]!), decodeURIComponent(imageMatch[2]!));
+    }
+
     if (method === 'GET' && (path === '/Items' || /^\/Users\/[^/]+\/Items$/.test(path))) {
       return this.handleLibrary(res, url);
     }
@@ -306,6 +314,21 @@ export class MockJellyfin {
     const items =
       seriesId === SERIES_ID && (!seasonId || seasonId === SEASON_ID) ? [episodeDto()] : [];
     json(res, 200, { Items: items, TotalRecordCount: items.length, StartIndex: 0 });
+  }
+
+  private handleImage(res: ServerResponse, url: URL, id: string, type: string): void {
+    const known = new Set([MOVIE_ID, EPISODE_ID, SERIES_ID, SEASON_ID]);
+    if (!known.has(id)) {
+      res.statusCode = 404;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: 'image not found' }));
+      return;
+    }
+    const tag = url.searchParams.get('tag') ?? 'none';
+    res.statusCode = 200;
+    res.setHeader('content-type', 'image/jpeg');
+    res.setHeader('etag', `"${id}-${type}-${tag}"`);
+    res.end(IMAGE_BYTES);
   }
 
   private childrenOf(parentId: string): unknown[] {
@@ -598,6 +621,8 @@ export function movieDto(id: string = MOVIE_ID, name = 'Test Movie') {
     ProductionYear: 2019,
     RunTimeTicks: 7_200_000_000,
     Overview: 'A verification movie.',
+    ImageTags: { Primary: 'movie-primary-tag' },
+    BackdropImageTags: ['movie-backdrop-tag'],
     MediaSources: [
       {
         Id: id,
@@ -626,6 +651,7 @@ export function episodeDto() {
     ProductionYear: 2020,
     RunTimeTicks: 2_700_000_000,
     Overview: 'First episode.',
+    ImageTags: { Primary: 'episode-primary-tag' },
     MediaSources: [
       {
         Id: EPISODE_ID,
@@ -650,6 +676,7 @@ export function seriesDto() {
     Type: 'Series',
     ProductionYear: 2020,
     ChildCount: 1,
+    ImageTags: { Primary: 'series-primary-tag' },
     MediaSources: [],
     MediaStreams: [],
   };
@@ -664,6 +691,7 @@ export function seasonDto() {
     SeriesId: SERIES_ID,
     IndexNumber: 1,
     ChildCount: 1,
+    ImageTags: { Primary: 'season-primary-tag' },
     MediaSources: [],
     MediaStreams: [],
   };

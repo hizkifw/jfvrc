@@ -302,6 +302,38 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return requireJellyfin().getItem(normalizeId(id));
   });
 
+  app.get('/api/items/:id/image', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!isValidItemId(id)) {
+      throw badRequest('invalid_item_id', 'Item id must be a UUID or 32 character hex string');
+    }
+    const q = request.query as Record<string, unknown>;
+    const imageType = typeof q.type === 'string' && q.type ? q.type : 'Primary';
+    const imageIndex =
+      q.index === undefined || q.index === '' ? undefined : clampInt(q.index, 0, 0, 100, 'index');
+    const maxWidth =
+      q.width === undefined || q.width === '' ? undefined : clampInt(q.width, 0, 8, 2000, 'width');
+    const maxHeight =
+      q.height === undefined || q.height === '' ? undefined : clampInt(q.height, 0, 8, 2000, 'height');
+    const quality =
+      q.quality === undefined || q.quality === '' ? undefined : clampInt(q.quality, 90, 1, 100, 'quality');
+    const tag = typeof q.tag === 'string' && q.tag ? q.tag : undefined;
+
+    const image = await requireJellyfin().getImage({
+      itemId: normalizeId(id),
+      imageType,
+      imageIndex,
+      maxWidth,
+      maxHeight,
+      quality,
+      tag,
+    });
+    reply.header('Cache-Control', 'private, max-age=86400');
+    if (image.etag) reply.header('ETag', image.etag);
+    reply.type(image.contentType);
+    return image.data;
+  });
+
   app.post('/api/links', async (request, reply): Promise<CreateLinkResponse> => {
     const parsed = createLinkSchema.safeParse(request.body);
     if (!parsed.success) {

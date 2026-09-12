@@ -1,7 +1,7 @@
 import type { AppConfig, JellyfinConfig } from './config';
 import type { ItemDetails, ItemType, MediaItem, MediaSource, Preset, Track } from '../shared/contracts';
 import { badRequest, notFound, unprocessable, upstreamError } from './errors';
-import { apiUrl, stripSensitiveParams, validateUpstreamUrl } from './urls';
+import { apiUrl, canonicalGuid, stripSensitiveParams, validateUpstreamUrl } from './urls';
 
 const PRESET_SETTINGS: Record<Preset, { maxStreamingBitrate: number; maxWidth: number; maxHeight: number }> = {
   '1080p': { maxStreamingBitrate: 8_000_000, maxWidth: 1920, maxHeight: 1080 },
@@ -22,6 +22,40 @@ const SUBTITLE_ENCODE_PROFILES = [
   'dvdsub',
   'dvbsub',
 ].map((Format) => ({ Format, Method: 'Encode' }));
+
+/** Image kinds Jellyfin exposes under Items/{id}/Images that we are willing to proxy. */
+const ALLOWED_IMAGE_TYPES = new Set([
+  'Primary',
+  'Art',
+  'Backdrop',
+  'Banner',
+  'Logo',
+  'Thumb',
+  'Disc',
+  'Box',
+  'BoxRear',
+  'Screenshot',
+  'Menu',
+  'Chapter',
+  'Profile',
+]);
+
+export interface ImageRequest {
+  itemId: string;
+  imageType: string;
+  imageIndex?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  quality?: number;
+  tag?: string;
+  signal?: AbortSignal;
+}
+
+export interface ImageResponse {
+  data: Buffer;
+  contentType: string;
+  etag?: string;
+}
 
 export function buildDeviceProfile(preset: Preset): Record<string, unknown> {
   const settings = PRESET_SETTINGS[preset];
@@ -109,6 +143,8 @@ interface JfItem {
   ChildCount?: number;
   RecursiveItemCount?: number;
   CollectionType?: string;
+  ImageTags?: Record<string, string> | null;
+  BackdropImageTags?: string[] | null;
   Overview?: string;
   RunTimeTicks?: number;
   MediaSources?: JfMediaSource[] | null;
@@ -155,6 +191,9 @@ export interface UpstreamFetchOptions {
 
 /** Hard ceiling for JSON negotiation/metadata bodies, enforced while streaming. */
 const MAX_JSON_BODY_BYTES = 5 * 1024 * 1024;
+
+/** Hard ceiling for proxied artwork so a hostile upstream cannot exhaust memory. */
+const MAX_IMAGE_BODY_BYTES = 8 * 1024 * 1024;
 
 /** Discard a response we are not going to consume. Never throws. */
 async function cancelResponseBody(response: Response): Promise<void> {
@@ -220,6 +259,50 @@ async function readJsonBody<T>(response: Response, malformedMessage: string): Pr
   }
 }
 
+/** Read a binary body enforcing a byte ceiling, returning the complete buffer. */
+async function readBinaryBody(
+  response: Response,
+  maxBytes: number,
+  malformedMessage: string,
+): Promise<Buffer> {
+  const body = response.body;
+  if (!body) throw upstreamError(malformedMessage);
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await cancelResponseBody(response);
+    throw upstreamError(malformedMessage);
+  }
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    for (;;) {
+      let result;
+      try {
+        result = await reader.read();
+      } catch {
+        throw upstreamError(malformedMessage);
+      }
+      if (result.done) break;
+      const chunk = result.value;
+      if (!chunk) continue;
+      received += chunk.byteLength;
+      if (received > maxBytes) {
+        throw upstreamError(malformedMessage);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // ignore
+    }
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, received);
+}
+
 function pick<T>(obj: Record<string, unknown> | undefined, ...keys: string[]): T | undefined {
   if (!obj) return undefined;
   for (const key of keys) {
@@ -271,6 +354,8 @@ export function mapItem(raw: JfItem): ItemDetails {
     ...(typeof raw.RunTimeTicks === 'number'
       ? { runTimeSeconds: Math.round(raw.RunTimeTicks / 10_000_000) }
       : {}),
+    ...(raw.ImageTags?.Primary ? { imageTag: raw.ImageTags.Primary } : {}),
+    ...(raw.BackdropImageTags?.[0] ? { backdropTag: raw.BackdropImageTags[0] } : {}),
     ...(typeof raw.ChildCount === 'number'
       ? { childCount: raw.ChildCount }
       : typeof raw.RecursiveItemCount === 'number'
@@ -449,7 +534,7 @@ export class JellyfinClient {
       limit: String(limit),
       sortBy: 'SortName',
       sortOrder: 'Ascending',
-      enableImages: 'false',
+      enableImages: 'true',
       enableTotalRecordCount: 'true',
     });
     if (query.trim()) {
@@ -488,7 +573,7 @@ export class JellyfinClient {
       recursive: 'false',
       startIndex: String(startIndex),
       limit: String(limit),
-      enableImages: 'false',
+      enableImages: 'true',
       enableTotalRecordCount: 'true',
     });
     const url = apiUrl(this.jellyfin, `/Items?${params.toString()}`);
@@ -508,7 +593,7 @@ export class JellyfinClient {
     }
     const params = new URLSearchParams({
       userId: this.jellyfin.userId,
-      enableImages: 'false',
+      enableImages: 'true',
     });
     const url = apiUrl(this.jellyfin, `/Shows/${encodeURIComponent(seriesId)}/Seasons?${params.toString()}`);
     const raw = await this.getJson<JfQueryResult>(url, deviceId);
@@ -532,7 +617,7 @@ export class JellyfinClient {
       seasonId,
       startIndex: String(startIndex),
       limit: String(limit),
-      enableImages: 'false',
+      enableImages: 'true',
       enableTotalRecordCount: 'true',
     });
     const url = apiUrl(
@@ -542,6 +627,71 @@ export class JellyfinClient {
     const raw = await this.getJson<JfQueryResult>(url, deviceId);
     const items = (raw.Items ?? []).map((item) => mapItem(item));
     return { items, total: raw.TotalRecordCount ?? items.length };
+  }
+
+  /**
+   * Fetch an item's artwork through the authenticated API. The URL is built
+   * server-side from an allowlisted image type and validated against the
+   * configured Jellyfin origin plus the item's own Images namespace, so callers
+   * can only ever request artwork that belongs to the item they asked for. The
+   * body is bounded and buffered so no upstream credentials or URLs leak.
+   */
+  async getImage(input: ImageRequest): Promise<ImageResponse> {
+    if (!isValidItemId(input.itemId)) {
+      throw badRequest('invalid_item_id', 'Item id must be a UUID or 32 character hex string');
+    }
+    if (!ALLOWED_IMAGE_TYPES.has(input.imageType)) {
+      throw badRequest('invalid_image_type', 'Unsupported image type');
+    }
+    const index = input.imageIndex !== undefined ? `/${input.imageIndex}` : '';
+    const params = new URLSearchParams();
+    if (input.maxWidth !== undefined) params.set('maxWidth', String(input.maxWidth));
+    if (input.maxHeight !== undefined) params.set('maxHeight', String(input.maxHeight));
+    if (input.quality !== undefined) params.set('quality', String(input.quality));
+    if (input.tag) params.set('tag', input.tag);
+    const query = params.toString();
+    const built = apiUrl(
+      this.jellyfin,
+      `/Items/${encodeURIComponent(input.itemId)}/Images/${encodeURIComponent(input.imageType)}${index}${query ? `?${query}` : ''}`,
+    );
+    const validated = validateUpstreamUrl(built, this.jellyfin);
+    const base = this.jellyfin.basePath;
+    const remainder =
+      base && validated.pathname.startsWith(`${base}/`)
+        ? validated.pathname.slice(base.length)
+        : validated.pathname;
+    const match = /^\/Items\/([^/]+)\/Images\//i.exec(remainder);
+    if (!match || canonicalGuid(match[1]!) !== canonicalGuid(input.itemId)) {
+      throw badRequest('untrusted_path', 'Image URL is outside the item namespace');
+    }
+
+    const { signal, dispose } = this.deadline(input.signal);
+    try {
+      let response: Response;
+      try {
+        response = await this.request(validated.toString(), { method: 'GET', signal });
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AppError') throw error;
+        throw upstreamError();
+      }
+      if (!response.ok) {
+        await cancelResponseBody(response);
+        if (response.status === 404) {
+          throw notFound('image_not_found', 'The requested image was not found on Jellyfin');
+        }
+        throw upstreamError();
+      }
+      const data = await readBinaryBody(
+        response,
+        MAX_IMAGE_BODY_BYTES,
+        'Jellyfin returned an oversized image',
+      );
+      const contentType = response.headers.get('content-type') ?? 'image/jpeg';
+      const etag = response.headers.get('etag') ?? undefined;
+      return { data, contentType, ...(etag ? { etag } : {}) };
+    } finally {
+      dispose();
+    }
   }
 
   async negotiatePlayback(input: NegotiateInput): Promise<PlaybackNegotiation> {

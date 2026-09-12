@@ -154,6 +154,24 @@ describe('resolve and library', () => {
     const invalid = await get('/api/library/items?parentId=nope');
     expect(invalid.statusCode).toBe(400);
   });
+
+  it('serves item artwork through the authenticated image route', async () => {
+    ctx = await setup();
+    const image = await ctx.built.app.inject({
+      method: 'GET',
+      url: `/api/items/${ITEM_ID}/image?type=Primary&width=400&height=225`,
+      headers: ctx.auth,
+    });
+    expect(image.statusCode).toBe(200);
+    expect(image.headers['content-type']).toContain('image/jpeg');
+    expect(image.rawPayload.toString()).toBe('MOCK-IMAGE-BYTES');
+
+    const unauth = await ctx.built.app.inject({
+      method: 'GET',
+      url: `/api/items/${ITEM_ID}/image`,
+    });
+    expect(unauth.statusCode).toBe(401);
+  });
 });
 
 describe('links', () => {

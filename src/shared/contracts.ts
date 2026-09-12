@@ -43,6 +43,10 @@ export interface MediaItem {
   episodeNumber?: number;
   overview?: string;
   runTimeSeconds?: number;
+  /** Jellyfin primary image tag; absent when the item has no artwork. */
+  imageTag?: string;
+  /** Jellyfin backdrop image tag, used for wider artwork when available. */
+  backdropTag?: string;
   /** Number of direct children, for browsable folders/series/seasons. */
   childCount?: number;
   /** Jellyfin collection type for library views (e.g. "movies", "tvshows"). */

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   EPISODE_ID,
+  IMAGE_BYTES,
   MOVIE_ID,
   MOVIES_LIBRARY_ID,
   SECRET_TOKEN,
@@ -207,6 +208,57 @@ describe('API contract and frontend compatibility', () => {
     const missing = await get('/api/library/items');
     expect(missing.statusCode).toBe(400);
     expect(missing.json()).toMatchObject({ error: { code: 'invalid_parent_id' } });
+  });
+
+  it('proxies item artwork through the authenticated API without leaking credentials', async () => {
+    stack = await startStack();
+
+    const movies = await stack.app.inject({
+      method: 'GET',
+      url: `/api/library/items?parentId=${MOVIES_LIBRARY_ID}`,
+      headers: stack.authHeaders,
+    });
+    const movie = (movies.json() as { items: Array<{ imageTag?: string; backdropTag?: string }> })
+      .items[0]!;
+    expect(movie.imageTag).toBe('movie-primary-tag');
+
+    const unauth = await stack.app.inject({
+      method: 'GET',
+      url: `/api/items/${MOVIE_ID}/image`,
+    });
+    expect(unauth.statusCode).toBe(401);
+
+    const image = await stack.app.inject({
+      method: 'GET',
+      url: `/api/items/${MOVIE_ID}/image?type=Primary&tag=${movie.imageTag}&width=400&height=225`,
+      headers: stack.authHeaders,
+    });
+    expect(image.statusCode).toBe(200);
+    expect(image.headers['content-type']).toContain('image/jpeg');
+    expect(image.headers['cache-control']).toContain('private');
+    expect(image.rawPayload.equals(IMAGE_BYTES)).toBe(true);
+
+    // Upstream got a server-built image URL (no client URL is trusted).
+    const upstream = stack.mock.last(`/Items/${MOVIE_ID}/Images/Primary`);
+    expect(upstream?.query.get('tag')).toBe('movie-primary-tag');
+    expect(upstream?.query.get('maxWidth')).toBe('400');
+    expect(upstream?.query.get('maxHeight')).toBe('225');
+    expect(upstream?.rawUrl).not.toContain(SECRET_TOKEN);
+
+    const badType = await stack.app.inject({
+      method: 'GET',
+      url: `/api/items/${MOVIE_ID}/image?type=Hack`,
+      headers: stack.authHeaders,
+    });
+    expect(badType.statusCode).toBe(400);
+    expect(badType.json()).toMatchObject({ error: { code: 'invalid_image_type' } });
+
+    const missingImage = await stack.app.inject({
+      method: 'GET',
+      url: '/api/items/00000000-0000-4000-8000-000000000000/image',
+      headers: stack.authHeaders,
+    });
+    expect(missingImage.statusCode).toBe(404);
   });
 
   it('rejects link creation with unknown source/track and out-of-range start', async () => {

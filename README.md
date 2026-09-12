@@ -104,6 +104,7 @@ Errors are `{ "error": { "code": string, "message": string } }`.
 | `GET` | `/api/library/shows/:seriesId/seasons` | Seasons of a series; `{items,total}`. |
 | `GET` | `/api/library/shows/:seriesId/seasons/:seasonId/episodes?startIndex=&limit=` | Episodes of a season; `{items,total}`. |
 | `GET` | `/api/items/:id` | Normalized `ItemDetails`. |
+| `GET` | `/api/items/:id/image?type=&tag=&width=&height=&index=&quality=` | Authenticated item artwork (server-built, allowlisted upstream URL). |
 | `POST` | `/api/links` | Create a link; returns `{id,url,expiresAt,title}`. |
 | `GET` | `/api/links` | List link summaries (no URLs/tokens). |
 | `DELETE` | `/api/links/:id` | Revoke link and stop its sessions. |

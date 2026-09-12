@@ -170,6 +170,20 @@ export const api = {
     return request(`/api/items/${encodeURIComponent(id)}`);
   },
 
+  imagePath(
+    itemId: string,
+    options: { type?: string; tag?: string; width?: number; height?: number; index?: number } = {},
+  ): string {
+    const params = new URLSearchParams();
+    if (options.type) params.set('type', options.type);
+    if (options.tag) params.set('tag', options.tag);
+    if (options.width !== undefined) params.set('width', String(options.width));
+    if (options.height !== undefined) params.set('height', String(options.height));
+    if (options.index !== undefined) params.set('index', String(options.index));
+    const query = params.toString();
+    return `/api/items/${encodeURIComponent(itemId)}/image${query ? `?${query}` : ''}`;
+  },
+
   createLink(payload: CreateLinkRequest): Promise<CreateLinkResponse> {
     return request('/api/links', jsonBody(payload));
   },
@@ -185,6 +199,29 @@ export const api = {
 
 export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
+}
+
+/**
+ * Fetch an authenticated image as a Blob so the admin bearer token never has
+ * to appear in an <img> URL. Callers turn the blob into an object URL.
+ */
+export async function fetchImage(path: string): Promise<Blob> {
+  const headers = new Headers();
+  if (adminToken) headers.set('Authorization', `Bearer ${adminToken}`);
+  let response: Response;
+  try {
+    response = await fetch(path, { headers });
+  } catch {
+    throw new ApiError('network_error', 'Could not reach the server. Check your connection.', 0);
+  }
+  if (response.status === 401) {
+    onUnauthorized?.();
+    throw new ApiError('unauthorized', 'Your admin token was rejected. Enter it again.', 401);
+  }
+  if (!response.ok) {
+    throw new ApiError('image_error', `Image request failed (HTTP ${response.status}).`, response.status);
+  }
+  return response.blob();
 }
 
 export function errorMessage(error: unknown): string {
