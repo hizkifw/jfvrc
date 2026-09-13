@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, errorMessage } from '../api';
 import { formatDateTime, relativeExpiry } from '../format';
 import type { LinkSummary } from '../types';
-import { CopyButton, EmptyState, ErrorBanner, Spinner } from './ui';
+import { EmptyState, ErrorBanner, Spinner } from './ui';
 
 export function LinksPanel({ reloadToken }: { reloadToken: number }) {
   const [links, setLinks] = useState<LinkSummary[]>([]);
@@ -97,7 +97,6 @@ export function LinksPanel({ reloadToken }: { reloadToken: number }) {
                   </p>
                 </div>
                 <div className="link-actions">
-                  <CopyButton value={link.id} label="Copy id" />
                   {link.revoked ? (
                     <span className="badge badge-danger">revoked</span>
                   ) : confirmId === link.id ? (

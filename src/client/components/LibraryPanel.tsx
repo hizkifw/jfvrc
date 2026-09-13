@@ -1,21 +1,14 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, errorMessage } from '../api';
 import { formatRuntime } from '../format';
 import type { ItemDetails, MediaType, MediaItem } from '../types';
+import { ItemDetail } from './ItemDetail';
+import { LibraryBreadcrumbs, useLibraryCrumbs } from './LibraryCrumbs';
 import { Thumbnail } from './Thumbnail';
 import { EmptyState, ErrorBanner, Spinner } from './ui';
 
 const PAGE_SIZE = 24;
-
-interface Crumb {
-  id: string | null;
-  name: string;
-  type?: MediaType;
-  seriesId?: string;
-}
-
-const ROOT_CRUMB: Crumb = { id: null, name: 'Libraries' };
 
 const BROWSE_TYPES: ReadonlySet<MediaType> = new Set<MediaType>([
   'Series',
@@ -60,6 +53,12 @@ function episodeCode(item: MediaItem): string | null {
   return `${season}${episode}` || null;
 }
 
+/** Breadcrumb label for an item, e.g. "S1E1 · Episode title" for episodes. */
+function itemCrumbLabel(item: MediaItem): string {
+  const code = episodeCode(item);
+  return code ? `${code} · ${item.name}` : item.name;
+}
+
 function subtitleFor(item: MediaItem, searching: boolean): string | null {
   if (item.type === 'Episode') {
     return [searching ? item.seriesName : null, episodeCode(item)].filter(Boolean).join(' · ') || null;
@@ -97,35 +96,39 @@ export function LibraryPanel({
   path,
   query,
   startIndex,
+  itemId,
+  item,
+  itemError,
   onNavigate,
   onSelect,
+  onCloseItem,
+  onRetryItem,
+  onCreated,
   onBusyChange,
 }: {
   path: string[];
   query: string;
   startIndex: number;
+  itemId: string | null;
+  item: ItemDetails | null;
+  itemError: string | null;
   onNavigate: (next: LibraryNavigation) => void;
   onSelect: (item: ItemDetails) => void;
+  onCloseItem: () => void;
+  onRetryItem: () => void;
+  onCreated: () => void;
   onBusyChange: (busy: boolean) => void;
 }) {
   const [queryDraft, setQueryDraft] = useState(query);
-  const [crumbState, setCrumbState] = useState<{ key: string; crumbs: Crumb[] }>({
-    key: '',
-    crumbs: [ROOT_CRUMB],
-  });
-  const [crumbError, setCrumbError] = useState<string | null>(null);
-  const [crumbReload, setCrumbReload] = useState(0);
+  const { crumbs, resolved, error: crumbError, retry: retryCrumbs } = useLibraryCrumbs(path);
   const [items, setItems] = useState<MediaItem[]>([]);
   const [total, setTotal] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const itemCache = useRef(new Map<string, ItemDetails>());
 
-  const pathKey = path.join('/');
+  const openItem = item && itemId && item.id === itemId ? item : null;
   const searching = query.length > 0;
-  const resolved = crumbState.key === pathKey;
-  const crumbs = resolved ? crumbState.crumbs : [ROOT_CRUMB];
   const currentId = path.length > 0 ? path[path.length - 1] : null;
   const current = resolved && path.length > 0 ? crumbs[crumbs.length - 1] : undefined;
   const currentType = current?.type;
@@ -135,47 +138,6 @@ export function LibraryPanel({
   useEffect(() => {
     setQueryDraft(query);
   }, [query]);
-
-  // Rebuild breadcrumb names/types for the URL path (also restores them on reload).
-  useEffect(() => {
-    if (!pathKey) {
-      setCrumbState({ key: '', crumbs: [ROOT_CRUMB] });
-      setCrumbError(null);
-      return;
-    }
-    let cancelled = false;
-    setCrumbError(null);
-    Promise.all(
-      path.map((id) => {
-        const cached = itemCache.current.get(id);
-        return cached ? Promise.resolve(cached) : api.item(id);
-      }),
-    )
-      .then((details) => {
-        if (cancelled) return;
-        details.forEach((detail) => itemCache.current.set(detail.id, detail));
-        setCrumbState({
-          key: pathKey,
-          crumbs: [
-            ROOT_CRUMB,
-            ...details.map((detail) => ({
-              id: detail.id,
-              name: detail.name,
-              type: detail.type,
-              seriesId: detail.seriesId,
-            })),
-          ],
-        });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setCrumbError(errorMessage(err));
-        setCrumbState({ key: pathKey, crumbs: [ROOT_CRUMB] });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [pathKey, crumbReload]);
 
   const load = useCallback(
     async (signal: { cancelled: boolean }) => {
@@ -239,6 +201,7 @@ export function LibraryPanel({
   const resolvingCrumbs = !searching && path.length > 0 && !resolved;
 
   useEffect(() => {
+    if (itemId) return;
     if (!searching && crumbError) return;
     if (!searching && resolvingCrumbs) return;
     const signal = { cancelled: false };
@@ -246,7 +209,7 @@ export function LibraryPanel({
     return () => {
       signal.cancelled = true;
     };
-  }, [load, searching, crumbError, resolvingCrumbs]);
+  }, [load, searching, crumbError, resolvingCrumbs, itemId]);
 
   function handleSearch(event: FormEvent) {
     event.preventDefault();
@@ -257,12 +220,12 @@ export function LibraryPanel({
     onNavigate({ path: path.slice(0, index), query: '', startIndex: 0 });
   }
 
-  async function openItem(item: MediaItem) {
-    setOpenId(item.id);
+  async function selectItem(entry: MediaItem) {
+    setOpenId(entry.id);
     setError(null);
     onBusyChange(true);
     try {
-      const details = await api.item(item.id);
+      const details = await api.item(entry.id);
       onSelect(details);
     } catch (err) {
       setError(errorMessage(err));
@@ -281,7 +244,7 @@ export function LibraryPanel({
       });
       return;
     }
-    void openItem(item);
+    void selectItem(item);
   }
 
   const atRoot = !searching && !currentId;
@@ -297,159 +260,158 @@ export function LibraryPanel({
       ? 'Choose a library, then drill down through series and seasons to an episode.'
       : `Browsing ${current?.name ?? '…'}.`;
 
-  return (
-    <section className="panel" aria-labelledby="library-heading">
-      <h2 id="library-heading">Library</h2>
-      <p className="panel-lead">{lead}</p>
-
-      <form className="search-row" onSubmit={handleSearch}>
-        <label className="sr-only" htmlFor="library-search">
-          Search the library
-        </label>
-        <input
-          id="library-search"
-          type="search"
-          value={queryDraft}
-          onChange={(event) => setQueryDraft(event.target.value)}
-          placeholder="Search movies, shows and episodes"
-          autoComplete="off"
+  if (itemId) {
+    return (
+      <>
+        <div className="section-crumbs">
+          <LibraryBreadcrumbs
+            crumbs={crumbs}
+            searching={searching}
+            currentLabel={openItem ? itemCrumbLabel(openItem) : undefined}
+            onCrumb={goToCrumb}
+          />
+        </div>
+        {crumbError ? <ErrorBanner message={crumbError} onRetry={retryCrumbs} /> : null}
+        <ItemDetail
+          item={openItem}
+          error={itemError}
+          onClose={onCloseItem}
+          onRetry={onRetryItem}
+          onCreated={onCreated}
         />
-        <button type="submit" className="btn btn-primary">
-          Search
-        </button>
-      </form>
+      </>
+    );
+  }
 
-      <nav className="crumbs" aria-label="Library location">
-        {crumbs.map((crumb, index) => (
-          <Fragment key={`${crumb.id ?? 'root'}-${index}`}>
-            {index > 0 ? (
-              <span className="crumb-sep" aria-hidden="true">
-                /
-              </span>
-            ) : null}
-            <button
-              type="button"
-              className="crumb"
-              onClick={() => goToCrumb(index)}
-              aria-current={!searching && index === crumbs.length - 1 ? 'page' : undefined}
-            >
-              {crumb.name}
-            </button>
-          </Fragment>
-        ))}
-        {searching ? (
+  return (
+    <>
+      <div className="section-crumbs">
+        <LibraryBreadcrumbs crumbs={crumbs} searching={searching} onCrumb={goToCrumb} />
+      </div>
+
+      <section className="panel" aria-labelledby="library-heading">
+        <h2 id="library-heading">Library</h2>
+        <p className="panel-lead">{lead}</p>
+
+        <form className="search-row" onSubmit={handleSearch}>
+          <label className="sr-only" htmlFor="library-search">
+            Search the library
+          </label>
+          <input
+            id="library-search"
+            type="search"
+            value={queryDraft}
+            onChange={(event) => setQueryDraft(event.target.value)}
+            placeholder="Search movies, shows and episodes"
+            autoComplete="off"
+          />
+          <button type="submit" className="btn btn-primary">
+            Search
+          </button>
+        </form>
+
+        {crumbError ? <ErrorBanner message={crumbError} onRetry={retryCrumbs} /> : null}
+
+        {error ? (
+          <ErrorBanner message={error} onRetry={() => void load({ cancelled: false })} />
+        ) : null}
+
+        {resolvingCrumbs || (busy && items.length === 0) ? (
+          <div className="center-pad">
+            <Spinner label="Loading library" />
+          </div>
+        ) : null}
+
+        {!resolvingCrumbs && !busy && items.length === 0 && !error && !crumbError ? (
+          <EmptyState title="No items found">
+            {searching
+              ? `Nothing matched "${query}". Try a different search.`
+              : atRoot
+                ? 'No libraries are available for this account.'
+                : 'This folder has no items.'}
+          </EmptyState>
+        ) : null}
+
+        {items.length > 0 ? (
           <>
-            <span className="crumb-sep" aria-hidden="true">
-              /
-            </span>
-            <span className="crumb crumb-static" aria-current="page">
-              Search
-            </span>
+            <ul className="item-grid">
+              {items.map((entry) => {
+                const browsable = isBrowsable(entry.type);
+                const subtitle = subtitleFor(entry, searching);
+                const children = childLabel(entry);
+                const runtime = formatRuntime(entry.runTimeSeconds);
+                const imagePath = imagePathFor(entry);
+                const variant = thumbnailVariant(entry.type);
+                return (
+                  <li key={entry.id}>
+                    <button
+                      type="button"
+                      className={browsable ? 'item-card item-card-browse' : 'item-card'}
+                      onClick={() => activate(entry)}
+                      disabled={openId === entry.id}
+                      aria-busy={openId === entry.id}
+                    >
+                      {imagePath ? (
+                        <Thumbnail path={imagePath} alt="" variant={variant} />
+                      ) : (
+                        <span
+                          className={
+                            variant === 'poster'
+                              ? 'thumb thumb-poster thumb-fallback'
+                              : 'thumb thumb-wide thumb-fallback'
+                          }
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="item-type">{TYPE_LABELS[entry.type]}</span>
+                      <span className="item-name">{entry.name}</span>
+                      {subtitle ? <span className="item-sub">{subtitle}</span> : null}
+                      <span className="item-meta">
+                        {entry.year && entry.type !== 'Series' ? <span>{entry.year}</span> : null}
+                        {runtime ? <span>{runtime}</span> : null}
+                        {children ? <span>{children}</span> : null}
+                      </span>
+                      {browsable ? (
+                        <span className="item-chevron" aria-hidden="true">
+                          ›
+                        </span>
+                      ) : null}
+                      {openId === entry.id ? (
+                        <span className="item-loading">
+                          <Spinner label="Loading item" />
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {showPager ? (
+              <nav className="pager" aria-label="Library pagination">
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => onNavigate({ startIndex: Math.max(0, startIndex - PAGE_SIZE) })}
+                  disabled={!canPrev || busy}
+                >
+                  Previous
+                </button>
+                <span className="pager-status" role="status" aria-live="polite">
+                  {total > 0 ? `${pageStart}–${pageEnd} of ${total}` : 'No results'}
+                </span>
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => onNavigate({ startIndex: startIndex + PAGE_SIZE })}
+                  disabled={!canNext || busy}
+                >
+                  Next
+                </button>
+              </nav>
+            ) : null}
           </>
         ) : null}
-      </nav>
-
-      {crumbError ? (
-        <ErrorBanner message={crumbError} onRetry={() => setCrumbReload((value) => value + 1)} />
-      ) : null}
-
-      {error ? <ErrorBanner message={error} onRetry={() => void load({ cancelled: false })} /> : null}
-
-      {resolvingCrumbs || (busy && items.length === 0) ? (
-        <div className="center-pad">
-          <Spinner label="Loading library" />
-        </div>
-      ) : null}
-
-      {!resolvingCrumbs && !busy && items.length === 0 && !error && !crumbError ? (
-        <EmptyState title="No items found">
-          {searching
-            ? `Nothing matched "${query}". Try a different search.`
-            : atRoot
-              ? 'No libraries are available for this account.'
-              : 'This folder has no items.'}
-        </EmptyState>
-      ) : null}
-
-      {items.length > 0 ? (
-        <>
-          <ul className="item-grid">
-            {items.map((item) => {
-              const browsable = isBrowsable(item.type);
-              const subtitle = subtitleFor(item, searching);
-              const children = childLabel(item);
-              const runtime = formatRuntime(item.runTimeSeconds);
-              const imagePath = imagePathFor(item);
-              const variant = thumbnailVariant(item.type);
-              return (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className={browsable ? 'item-card item-card-browse' : 'item-card'}
-                    onClick={() => activate(item)}
-                    disabled={openId === item.id}
-                    aria-busy={openId === item.id}
-                  >
-                    {imagePath ? (
-                      <Thumbnail path={imagePath} alt="" variant={variant} />
-                    ) : (
-                      <span
-                        className={
-                          variant === 'poster'
-                            ? 'thumb thumb-poster thumb-fallback'
-                            : 'thumb thumb-wide thumb-fallback'
-                        }
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="item-type">{TYPE_LABELS[item.type]}</span>
-                    <span className="item-name">{item.name}</span>
-                    {subtitle ? <span className="item-sub">{subtitle}</span> : null}
-                    <span className="item-meta">
-                      {item.year && item.type !== 'Series' ? <span>{item.year}</span> : null}
-                      {runtime ? <span>{runtime}</span> : null}
-                      {children ? <span>{children}</span> : null}
-                    </span>
-                    {browsable ? (
-                      <span className="item-chevron" aria-hidden="true">
-                        ›
-                      </span>
-                    ) : null}
-                    {openId === item.id ? (
-                      <span className="item-loading">
-                        <Spinner label="Loading item" />
-                      </span>
-                    ) : null}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          {showPager ? (
-            <nav className="pager" aria-label="Library pagination">
-              <button
-                type="button"
-                className="btn btn-small"
-                onClick={() => onNavigate({ startIndex: Math.max(0, startIndex - PAGE_SIZE) })}
-                disabled={!canPrev || busy}
-              >
-                Previous
-              </button>
-              <span className="pager-status" role="status" aria-live="polite">
-                {total > 0 ? `${pageStart}–${pageEnd} of ${total}` : 'No results'}
-              </span>
-              <button
-                type="button"
-                className="btn btn-small"
-                onClick={() => onNavigate({ startIndex: startIndex + PAGE_SIZE })}
-                disabled={!canNext || busy}
-              >
-                Next
-              </button>
-            </nav>
-          ) : null}
-        </>
-      ) : null}
-    </section>
+      </section>
+    </>
   );
 }

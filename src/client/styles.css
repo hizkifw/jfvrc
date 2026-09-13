@@ -556,6 +556,10 @@ button:disabled {
 }
 
 /* Library */
+.section-crumbs {
+  margin-top: 20px;
+}
+
 .crumbs {
   display: flex;
   align-items: center;

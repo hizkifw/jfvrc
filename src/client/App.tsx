@@ -8,12 +8,11 @@ import {
   setUnauthorizedHandler,
   storeToken,
 } from './api';
-import { ItemPanel } from './components/ItemPanel';
+import { ItemDetail } from './components/ItemDetail';
 import { LibraryPanel } from './components/LibraryPanel';
 import { LinksPanel } from './components/LinksPanel';
 import { ResolvePanel } from './components/ResolvePanel';
 import { TokenGate } from './components/TokenGate';
-import { ErrorBanner, Spinner } from './components/ui';
 import { DEFAULT_ROUTE, useRoute } from './router';
 import type { Route, Tab } from './router';
 import type { ItemDetails, StatusResponse } from './types';
@@ -204,9 +203,9 @@ export function App() {
             type="button"
             role="tab"
             id={`tab-${entry.id}`}
-            aria-selected={route.tab === entry.id && !route.itemId}
+            aria-selected={route.tab === entry.id}
             aria-controls={`panel-${entry.id}`}
-            className={route.tab === entry.id && !route.itemId ? 'tab tab-active' : 'tab'}
+            className={route.tab === entry.id ? 'tab tab-active' : 'tab'}
             onClick={() => selectTab(entry.id)}
           >
             {entry.label}
@@ -215,31 +214,31 @@ export function App() {
       </nav>
 
       <main className="wrap" role="tabpanel" id={`panel-${route.tab}`} aria-labelledby={`tab-${route.tab}`}>
-        {route.itemId ? (
-          openItem ? (
-            <ItemPanel
-              item={openItem}
-              onClose={closeItem}
-              onCreated={() => setReloadToken((value) => value + 1)}
-            />
-          ) : itemError ? (
-            <ErrorBanner message={itemError} onRetry={() => setItemReload((value) => value + 1)} />
-          ) : (
-            <div className="center-pad">
-              <Spinner label="Loading item" />
-            </div>
-          )
-        ) : route.tab === 'resolve' ? (
-          <ResolvePanel onSelect={handleSelect} onBusyChange={handleBusyChange} />
-        ) : route.tab === 'library' ? (
+        {route.tab === 'library' ? (
           <LibraryPanel
             path={route.path}
             query={route.query}
             startIndex={route.startIndex}
+            itemId={route.itemId}
+            item={openItem}
+            itemError={itemError}
             onNavigate={handleLibraryNavigate}
             onSelect={handleSelect}
+            onCloseItem={closeItem}
+            onRetryItem={() => setItemReload((value) => value + 1)}
+            onCreated={() => setReloadToken((value) => value + 1)}
             onBusyChange={handleBusyChange}
           />
+        ) : route.itemId ? (
+          <ItemDetail
+            item={openItem}
+            error={itemError}
+            onClose={closeItem}
+            onRetry={() => setItemReload((value) => value + 1)}
+            onCreated={() => setReloadToken((value) => value + 1)}
+          />
+        ) : route.tab === 'resolve' ? (
+          <ResolvePanel onSelect={handleSelect} onBusyChange={handleBusyChange} />
         ) : (
           <LinksPanel reloadToken={reloadToken} />
         )}
