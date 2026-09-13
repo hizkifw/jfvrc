@@ -318,6 +318,18 @@ describe('API contract and frontend compatibility', () => {
     expect(beyondEnd.json()).toMatchObject({ error: { code: 'start_out_of_range' } });
   });
 
+  it('defaults start position and expiry when the request omits them', async () => {
+    stack = await startStack();
+    const link = await createLink(stack.app, stack.authHeaders, {
+      startSeconds: undefined,
+      expiresInHours: undefined,
+    });
+    const record = stack.store.findByToken(link.token);
+    expect(record?.startSeconds).toBe(0);
+    const expected = Date.now() + stack.config.linkDefaultExpiryHours * 3_600_000;
+    expect(Math.abs(Date.parse(link.expiresAt) - expected)).toBeLessThan(5_000);
+  });
+
   it('lists and revokes links without reproducing tokens', async () => {
     stack = await startStack();
     const link = await createLink(stack.app, stack.authHeaders);

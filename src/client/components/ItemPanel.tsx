@@ -5,8 +5,6 @@ import { formatDateTime, formatRuntime, formatTrack, relativeExpiry } from '../f
 import type { CreateLinkResponse, ItemDetails, Preset, Track } from '../types';
 import { CopyButton, ErrorBanner, Field, Spinner } from './ui';
 
-const MAX_EXPIRY_HOURS = 168;
-
 const JAPANESE_TRACK_RE = /japanese|\bjpn\b|\bjp\b|\bja\b/i;
 const ENGLISH_TRACK_RE = /english|\beng\b|\ben\b/i;
 
@@ -31,8 +29,6 @@ export function ItemPanel({
   const [audio, setAudio] = useState('');
   const [subtitle, setSubtitle] = useState(-1);
   const [preset, setPreset] = useState<Preset>('1080p');
-  const [startSeconds, setStartSeconds] = useState('0');
-  const [expiryHours, setExpiryHours] = useState('24');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateLinkResponse | null>(null);
@@ -45,8 +41,6 @@ export function ItemPanel({
   useEffect(() => {
     setSourceId(item.mediaSources[0]?.id ?? '');
     setPreset('1080p');
-    setStartSeconds('0');
-    setExpiryHours('24');
     setResult(null);
     setError(null);
   }, [item]);
@@ -76,20 +70,6 @@ export function ItemPanel({
       setError('This item has no playable media sources.');
       return;
     }
-    const start = Number(startSeconds);
-    const expiry = Number(expiryHours);
-    if (!Number.isFinite(start) || start < 0 || !Number.isInteger(start)) {
-      setError('Start position must be a whole number of seconds (0 or more).');
-      return;
-    }
-    if (item.runTimeSeconds !== undefined && start > item.runTimeSeconds) {
-      setError('Start position is past the end of this item.');
-      return;
-    }
-    if (!Number.isFinite(expiry) || !Number.isInteger(expiry) || expiry < 1 || expiry > MAX_EXPIRY_HOURS) {
-      setError(`Expiry must be between 1 and ${MAX_EXPIRY_HOURS} hours.`);
-      return;
-    }
 
     setBusy(true);
     setError(null);
@@ -100,8 +80,6 @@ export function ItemPanel({
         audioStreamIndex: audio === '' ? undefined : Number(audio),
         subtitleStreamIndex: subtitle,
         preset,
-        startSeconds: start,
-        expiresInHours: expiry,
       });
       setResult(created);
       onCreated();
@@ -245,43 +223,6 @@ export function ItemPanel({
               </label>
             </div>
           </fieldset>
-
-          <div className="field-grid">
-            <Field
-              label="Start at (seconds)"
-              htmlFor="cfg-start"
-              hint={runtime ? `0 to ${item.runTimeSeconds ?? 0} · run time ${runtime}` : '0 to start from the beginning.'}
-            >
-              <input
-                id="cfg-start"
-                type="number"
-                min={0}
-                step={1}
-                inputMode="numeric"
-                value={startSeconds}
-                onChange={(event) => setStartSeconds(event.target.value)}
-                disabled={busy}
-              />
-            </Field>
-
-            <Field
-              label="Expires in (hours)"
-              htmlFor="cfg-expiry"
-              hint={`1 to ${MAX_EXPIRY_HOURS} hours.`}
-            >
-              <input
-                id="cfg-expiry"
-                type="number"
-                min={1}
-                max={MAX_EXPIRY_HOURS}
-                step={1}
-                inputMode="numeric"
-                value={expiryHours}
-                onChange={(event) => setExpiryHours(event.target.value)}
-                disabled={busy}
-              />
-            </Field>
-          </div>
 
           {error ? <ErrorBanner message={error} /> : null}
 

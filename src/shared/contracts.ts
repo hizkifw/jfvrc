@@ -73,8 +73,10 @@ export interface CreateLinkRequest {
   audioStreamIndex?: number;
   subtitleStreamIndex: number;
   preset: Preset;
-  startSeconds: number;
-  expiresInHours: number;
+  /** Defaults to 0 (start of the item) when omitted. */
+  startSeconds?: number;
+  /** Defaults to the configured LINK_DEFAULT_EXPIRY_HOURS when omitted. */
+  expiresInHours?: number;
 }
 
 export interface CreateLinkResponse {

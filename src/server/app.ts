@@ -33,8 +33,8 @@ const createLinkSchema = z.object({
   audioStreamIndex: z.number().int().nullable().optional(),
   subtitleStreamIndex: z.number().int(),
   preset: z.enum(['1080p', '720p']),
-  startSeconds: z.number().finite().nonnegative(),
-  expiresInHours: z.number().finite().positive(),
+  startSeconds: z.number().finite().nonnegative().optional(),
+  expiresInHours: z.number().finite().positive().optional(),
 });
 
 export interface BuildAppOptions {
@@ -341,7 +341,9 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
       throw badRequest('invalid_request', issue ? issue.message : 'Invalid link request');
     }
     const body = parsed.data;
-    if (body.expiresInHours > config.linkMaxExpiryHours) {
+    const startSeconds = body.startSeconds ?? 0;
+    const expiresInHours = body.expiresInHours ?? config.linkDefaultExpiryHours;
+    if (expiresInHours > config.linkMaxExpiryHours) {
       throw badRequest(
         'expiry_too_long',
         `expiresInHours must not exceed ${config.linkMaxExpiryHours}`,
@@ -366,17 +368,17 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
         );
       }
     }
-    if (details.runTimeSeconds && body.startSeconds > details.runTimeSeconds) {
+    if (details.runTimeSeconds && startSeconds > details.runTimeSeconds) {
       throw badRequest('start_out_of_range', 'Start position is beyond the end of the item');
     }
-    const expiresAt = new Date(Date.now() + body.expiresInHours * 3_600_000).toISOString();
+    const expiresAt = new Date(Date.now() + expiresInHours * 3_600_000).toISOString();
     const { record, token } = store.createLink({
       item: details,
       mediaSourceId: body.mediaSourceId,
       audioStreamIndex: body.audioStreamIndex ?? null,
       subtitleStreamIndex: body.subtitleStreamIndex,
       preset: body.preset,
-      startSeconds: body.startSeconds,
+      startSeconds,
       expiresAt,
     });
     // Start negotiating/buffering in the background so the player can begin as

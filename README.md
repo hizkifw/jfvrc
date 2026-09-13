@@ -14,8 +14,7 @@ It is built for one household/operator and one configured Jellyfin server.
 ## Features
 
 - Resolve a Jellyfin details URL or item id, or search the library.
-- Pick media source, audio track, subtitle track, a `1080p`/`720p` preset,
-  optional start position and link lifetime.
+- Pick media source, audio track, subtitle track and a `1080p`/`720p` preset.
 - Generates a shareable link of the form
   `https://<public-base>/s/<token>/master.m3u8`.
 - Rewrites Jellyfin master/media playlists recursively so keys, init maps,
@@ -75,7 +74,7 @@ npm start           # run the compiled server
 | `HOST` / `PORT` | `0.0.0.0` / `3000` | Listen address. |
 | `SESSION_IDLE_TTL_SECONDS` | `600` | Idle playback session lifetime. |
 | `MAX_ACTIVE_SESSIONS` | `12` | Global cap on active sessions plus pending negotiations; one session per link. |
-| `LINK_DEFAULT_EXPIRY_HOURS` | `24` | Default link lifetime. |
+| `LINK_DEFAULT_EXPIRY_HOURS` | `24` | Link lifetime for new links. |
 | `LINK_MAX_EXPIRY_HOURS` | `168` | Maximum link lifetime (7 days). |
 | `UPSTREAM_TIMEOUT_SECONDS` | `30` | Total deadline for upstream API/playlist requests; header/body inactivity timeout for media transfers. |
 | `MAX_MEDIA_REQUESTS` | `512` | Concurrent playback GET requests, including slow viewers and pending starts. Excess requests receive 503 with Retry-After. |
