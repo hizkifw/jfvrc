@@ -273,6 +273,17 @@ export function buildApp(options: BuildAppOptions): BuiltApp {
     return requireJellyfin().getChildren(normalizeId(parentId), startIndex, limit);
   });
 
+  app.get('/api/library/latest', async (request): Promise<ViewsResponse> => {
+    const q = request.query as Record<string, unknown>;
+    const parentId = typeof q.parentId === 'string' ? q.parentId.trim() : '';
+    if (!parentId) {
+      throw badRequest('invalid_parent_id', 'parentId is required');
+    }
+    const limit = clampInt(q.limit, 16, 1, 50, 'limit');
+    const items = await requireJellyfin().getLatest(normalizeId(parentId), limit);
+    return { items };
+  });
+
   app.get('/api/library/shows/:seriesId/seasons', async (request): Promise<LibraryResponse> => {
     const { seriesId } = request.params as { seriesId: string };
     return requireJellyfin().getSeasons(normalizeId(seriesId));

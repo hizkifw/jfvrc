@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { FormEvent } from 'react';
-import { api, errorMessage, itemLabel } from '../api';
-import { formatDateTime, formatRuntime, formatTrack, relativeExpiry } from '../format';
+import type { FormEvent, ReactNode } from 'react';
+import { api, errorMessage } from '../api';
+import { formatTrack, relativeExpiry } from '../format';
 import type { CreateLinkResponse, ItemDetails, Preset, Track } from '../types';
+import { Hero } from './Hero';
+import { Icon } from './icons';
 import { CopyButton, ErrorBanner, Field, Spinner } from './ui';
+
+const PRESETS: Array<{ id: Preset; label: string; detail: string }> = [
+  { id: '1080p', label: '1080p', detail: '8 Mbps' },
+  { id: '720p', label: '720p', detail: '4 Mbps' },
+];
 
 const JAPANESE_TRACK_RE = /japanese|\bjpn\b|\bjp\b|\bja\b/i;
 const ENGLISH_TRACK_RE = /english|\beng\b|\ben\b/i;
@@ -18,11 +25,15 @@ export function preferredTrackIndex(tracks: Track[], pattern: RegExp): number | 
 
 export function ItemPanel({
   item,
+  top,
   onClose,
+  onBrowse,
   onCreated,
 }: {
   item: ItemDetails;
+  top: ReactNode;
   onClose: () => void;
+  onBrowse: (path: string[]) => void;
   onCreated: () => void;
 }) {
   const [sourceId, setSourceId] = useState(item.mediaSources[0]?.id ?? '');
@@ -59,15 +70,10 @@ export function ItemPanel({
     setSubtitle(english !== null ? english : -1);
   }, [source]);
 
-  function selectSource(id: string) {
-    setSourceId(id);
-  }
-
-
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (!source) {
-      setError('This item has no playable media sources.');
+      setError("This item can't be played.");
       return;
     }
 
@@ -90,153 +96,168 @@ export function ItemPanel({
     }
   }
 
-  const runtime = formatRuntime(item.runTimeSeconds);
+  const seriesId = item.seriesId;
 
   return (
-    <section className="panel panel-accent" aria-labelledby="item-heading">
-      <div className="panel-head">
-        <div>
-          <p className="eyebrow">Configure playback</p>
-          <h2 id="item-heading">{itemLabel(item)}</h2>
-          {runtime ? <p className="hint">Run time {runtime}</p> : null}
-        </div>
-        <button type="button" className="btn btn-ghost" onClick={onClose}>
-          Close
-        </button>
-      </div>
+    <article className="detail" aria-labelledby="item-heading">
+      <Hero
+        item={item}
+        top={top}
+        headingId="item-heading"
+        onHeading={seriesId ? () => onBrowse([seriesId]) : undefined}
+      >
+        {seriesId && item.type === 'Episode' ? (
+          <button
+            type="button"
+            className="btn btn-glass"
+            onClick={() => onBrowse(item.seasonId ? [seriesId, item.seasonId] : [seriesId])}
+          >
+            <Icon name="grid" size={16} />
+            All Episodes
+          </button>
+        ) : null}
+      </Hero>
 
-      {item.overview ? <p className="overview">{item.overview}</p> : null}
-
-      {result ? (
-        <div className="result">
-          <h3>Link created</h3>
-          <p className="result-title">{result.title}</p>
-          <div className="input-row">
-            <input
-              type="text"
-              readOnly
-              value={result.url}
-              onFocus={(event) => event.currentTarget.select()}
-              aria-label="Generated playback URL"
-            />
-            <CopyButton value={result.url} label="Copy link" />
-          </div>
-          <p className="warn" role="note">
-            Anyone with this link can watch until it is revoked or expires
-            {` (${formatDateTime(result.expiresAt)}, ${relativeExpiry(result.expiresAt)})`}. It is
-            shown only once; save it now.
-          </p>
-          <div className="actions">
-            <button type="button" className="btn" onClick={() => setResult(null)}>
-              Create another
-            </button>
-            <button type="button" className="btn btn-ghost" onClick={onClose}>
-              Done
-            </button>
-          </div>
-        </div>
-      ) : (
-        <form onSubmit={handleSubmit} noValidate className="config-form">
-          {item.mediaSources.length === 0 ? (
-            <ErrorBanner message="No media sources are available for this item." />
-          ) : null}
-
-          <Field label="Media source" htmlFor="cfg-source">
-            <select
-              id="cfg-source"
-              value={source?.id ?? ''}
-              onChange={(event) => selectSource(event.target.value)}
-              disabled={busy || item.mediaSources.length === 0}
-            >
-              {item.mediaSources.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.name || candidate.id}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <div className="field-grid">
-            <Field label="Audio" htmlFor="cfg-audio">
-              <select
-                id="cfg-audio"
-                value={audio}
-                onChange={(event) => setAudio(event.target.value)}
-                disabled={busy}
-              >
-                <option value="">Auto (server default)</option>
-                {(source?.audioTracks ?? []).map((track) => (
-                  <option key={track.index} value={track.index}>
-                    {formatTrack(track)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Subtitles" htmlFor="cfg-subtitle">
-              <select
-                id="cfg-subtitle"
-                value={subtitle}
-                onChange={(event) => setSubtitle(Number(event.target.value))}
-                disabled={busy}
-              >
-                <option value={-1}>None</option>
-                {(source?.subtitleTracks ?? []).map((track) => (
-                  <option key={track.index} value={track.index}>
-                    {formatTrack(track)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          <fieldset className="fieldset">
-            <legend>Compatibility preset</legend>
-            <div className="radio-row">
-              <label className="radio">
-                <input
-                  type="radio"
-                  name="preset"
-                  value="1080p"
-                  checked={preset === '1080p'}
-                  onChange={() => setPreset('1080p')}
-                  disabled={busy}
-                />
-                <span>
-                  <strong>1080p</strong>
-                  <small>8 Mbps · H.264 / AAC</small>
-                </span>
-              </label>
-              <label className="radio">
-                <input
-                  type="radio"
-                  name="preset"
-                  value="720p"
-                  checked={preset === '720p'}
-                  onChange={() => setPreset('720p')}
-                  disabled={busy}
-                />
-                <span>
-                  <strong>720p</strong>
-                  <small>4 Mbps · H.264 / AAC</small>
-                </span>
-              </label>
+      <div className="wrap">
+        {result ? (
+          <div className="sheet result">
+            <div className="result-head">
+              <span className="result-icon">
+                <Icon name="check" size={20} />
+              </span>
+              <div>
+                <h2>Link Ready</h2>
+                <p className="lead">Expires {relativeExpiry(result.expiresAt)}</p>
+              </div>
             </div>
-          </fieldset>
-
-          {error ? <ErrorBanner message={error} /> : null}
-
-          <div className="actions">
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={busy || item.mediaSources.length === 0}
-            >
-              {busy ? <Spinner label="Creating link" /> : 'Create link'}
-            </button>
+            <div className="input-row">
+              <input
+                type="text"
+                className="mono"
+                readOnly
+                value={result.url}
+                onFocus={(event) => event.currentTarget.select()}
+                aria-label="Playback link"
+              />
+              <CopyButton value={result.url} label="Copy Link" className="btn btn-primary" />
+            </div>
+            <p className="callout" role="note">
+              <Icon name="alert" size={16} />
+              <span>
+                This link is shown only once. Anyone with it can watch until it expires or you
+                revoke it.
+              </span>
+            </p>
+            <div className="actions">
+              <button type="button" className="btn" onClick={() => setResult(null)}>
+                Create Another
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={onClose}>
+                Done
+              </button>
+            </div>
           </div>
-        </form>
-      )}
-    </section>
+        ) : (
+          <form onSubmit={handleSubmit} noValidate className="sheet">
+            <h2>New Link</h2>
+
+            {item.mediaSources.length === 0 ? (
+              <ErrorBanner message="This item can't be played." />
+            ) : null}
+
+            <div className="field-grid">
+              {item.mediaSources.length > 1 ? (
+                <div className="field-span">
+                  <Field label="Version" htmlFor="cfg-source">
+                    <select
+                      id="cfg-source"
+                      value={source?.id ?? ''}
+                      onChange={(event) => setSourceId(event.target.value)}
+                      disabled={busy}
+                    >
+                      {item.mediaSources.map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {candidate.name || candidate.id}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              ) : null}
+
+              <Field label="Audio" htmlFor="cfg-audio">
+                <select
+                  id="cfg-audio"
+                  value={audio}
+                  onChange={(event) => setAudio(event.target.value)}
+                  disabled={busy}
+                >
+                  <option value="">Auto</option>
+                  {(source?.audioTracks ?? []).map((track) => (
+                    <option key={track.index} value={track.index}>
+                      {formatTrack(track)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field label="Subtitles" htmlFor="cfg-subtitle">
+                <select
+                  id="cfg-subtitle"
+                  value={subtitle}
+                  onChange={(event) => setSubtitle(Number(event.target.value))}
+                  disabled={busy}
+                >
+                  <option value={-1}>None</option>
+                  {(source?.subtitleTracks ?? []).map((track) => (
+                    <option key={track.index} value={track.index}>
+                      {formatTrack(track)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+
+            <fieldset className="fieldset">
+              <legend>Quality</legend>
+              <div className="choice-row">
+                {PRESETS.map((option) => (
+                  <label key={option.id} className="choice">
+                    <input
+                      type="radio"
+                      name="preset"
+                      value={option.id}
+                      checked={preset === option.id}
+                      onChange={() => setPreset(option.id)}
+                      disabled={busy}
+                    />
+                    <span className="choice-text">
+                      <strong>{option.label}</strong>
+                      <small>{option.detail}</small>
+                    </span>
+                    <span className="choice-check">
+                      <Icon name="check" size={14} />
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+
+            {error ? <ErrorBanner message={error} /> : null}
+
+            <div className="actions">
+              <button
+                type="submit"
+                className="btn btn-primary btn-large"
+                disabled={busy || item.mediaSources.length === 0}
+              >
+                {busy ? <Spinner label="Creating link" /> : <Icon name="link" />}
+                Create Link
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </article>
   );
 }

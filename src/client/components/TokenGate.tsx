@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { errorMessage } from '../api';
+import { BrandMark, Icon } from './icons';
 import { ErrorBanner, Spinner } from './ui';
 
 export function TokenGate({
@@ -10,6 +11,7 @@ export function TokenGate({
 }) {
   const [token, setToken] = useState('');
   const [remember, setRemember] = useState(true);
+  const [reveal, setReveal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,36 +35,38 @@ export function TokenGate({
   return (
     <main className="gate">
       <div className="gate-card">
-        <div className="brand brand-large">
-          <span className="brand-mark" aria-hidden="true">
-            JF
-          </span>
-          <span className="brand-name">JFVRC</span>
+        <div className="gate-brand">
+          <BrandMark size={52} />
         </div>
-        <h1 className="gate-title">Jellyfin to revocable HLS</h1>
+        <h1 className="gate-title">JFVRC</h1>
         <p className="gate-sub">
-          Sign in with the operator admin token to resolve items, build playback links and manage
-          access.
+          Share anything in your Jellyfin library.
         </p>
         <form onSubmit={handleSubmit} noValidate>
           <div className="field">
-            <label htmlFor="admin-token">Admin token</label>
-            <input
-              id="admin-token"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              disabled={busy}
-              placeholder="Bearer token"
-              aria-invalid={error ? true : undefined}
-            />
-            <p className="hint">
-              Validated against the server before use. With "Remember" on it is kept in this
-              browser's local storage so a reload or restart keeps you signed in; turn it off to
-              keep it for this tab's session only. Never logged.
-            </p>
+            <label htmlFor="admin-token">Admin Token</label>
+            <div className="input-affix">
+              <input
+                id="admin-token"
+                type={reveal ? 'text' : 'password'}
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+                disabled={busy}
+                aria-invalid={error ? true : undefined}
+              />
+              <button
+                type="button"
+                className="affix-btn"
+                onClick={() => setReveal((value) => !value)}
+                aria-label={reveal ? 'Hide token' : 'Show token'}
+                aria-pressed={reveal}
+              >
+                <Icon name={reveal ? 'eye-off' : 'eye'} />
+              </button>
+            </div>
           </div>
           <label className="checkbox">
             <input
@@ -74,8 +78,8 @@ export function TokenGate({
             <span>Remember on this device</span>
           </label>
           {error ? <ErrorBanner message={error} /> : null}
-          <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
-            {busy ? <Spinner label="Checking token" /> : 'Unlock'}
+          <button type="submit" className="btn btn-primary btn-large btn-block" disabled={busy}>
+            {busy ? <Spinner label="Checking token" /> : 'Sign In'}
           </button>
         </form>
       </div>

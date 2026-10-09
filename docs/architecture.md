@@ -29,6 +29,7 @@ GET /api/status -> {configured:boolean, jellyfinUrl:string, publicBaseUrl:string
 POST /api/resolve {input:string} -> ItemDetails.
 GET /api/library?query=&startIndex=0&limit=24 -> {items:MediaItem[],total:number}; recursive movie/series/episode search, stable pagination.
 GET /api/library/views -> {items:MediaItem[]}; top-level user libraries (Jellyfin UserViews).
+GET /api/library/latest?parentId=&limit= -> {items:MediaItem[]}; most recently added items of a library (Jellyfin Items/Latest).
 GET /api/library/items?parentId=&startIndex=0&limit=24 -> {items:MediaItem[],total:number}; direct children of a library/folder (recursive=false), e.g. movies and series.
 GET /api/library/shows/:seriesId/seasons -> {items:MediaItem[],total:number}; Jellyfin Shows/{id}/Seasons.
 GET /api/library/shows/:seriesId/seasons/:seasonId/episodes?startIndex=0&limit=24 -> {items:MediaItem[],total:number}; Jellyfin Shows/{id}/Episodes?seasonId=.

@@ -19,6 +19,20 @@ export function formatRuntime(seconds?: number): string | null {
   return `${minutes}m`;
 }
 
+/** English name for a language code ("jpn" -> "Japanese"), or null when unknown. */
+function languageName(code: string): string | null {
+  try {
+    const name = new Intl.DisplayNames(['en'], { type: 'language' }).of(code);
+    return name && name !== code ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One-line track label. Jellyfin display titles usually already spell out the
+ * language and codec, so those are only appended when the label lacks them.
+ */
 export function formatTrack(track: {
   index: number;
   label: string;
@@ -27,12 +41,17 @@ export function formatTrack(track: {
   isDefault?: boolean;
   isForced?: boolean;
 }): string {
-  const bits = [track.label || `Track ${track.index}`];
-  if (track.language) bits.push(`[${track.language}]`);
-  if (track.codec) bits.push(track.codec);
-  if (track.isDefault) bits.push('default');
-  if (track.isForced) bits.push('forced');
-  return bits.join(' ');
+  const label = track.label || `Track ${track.index}`;
+  const mentions = (value: string) => label.toLowerCase().includes(value.toLowerCase());
+  const bits = [label];
+  if (track.language) {
+    const name = languageName(track.language);
+    if (!mentions(track.language) && !(name && mentions(name))) bits.push(name ?? track.language);
+  }
+  if (track.codec && !mentions(track.codec)) bits.push(track.codec.toUpperCase());
+  if (track.isDefault && !mentions('default')) bits.push('Default');
+  if (track.isForced && !mentions('forced')) bits.push('Forced');
+  return bits.join(' · ');
 }
 
 export function relativeExpiry(iso: string): string {
@@ -45,4 +64,16 @@ export function relativeExpiry(iso: string): string {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `in ${hours}h`;
   return `in ${Math.round(hours / 24)}d`;
+}
+
+/** "S1 E3" for an episode, or null when it has no numbering. */
+export function episodeCode(item: {
+  type: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
+}): string | null {
+  if (item.type !== 'Episode') return null;
+  const season = item.seasonNumber !== undefined ? `S${item.seasonNumber}` : '';
+  const episode = item.episodeNumber !== undefined ? `E${item.episodeNumber}` : '';
+  return [season, episode].filter(Boolean).join(' ') || null;
 }

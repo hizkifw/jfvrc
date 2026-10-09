@@ -4,6 +4,8 @@
  * client-friendly alias of the shared `ItemType`.
  */
 export type {
+  Artwork,
+  ArtworkRef,
   ItemType as MediaType,
   Preset,
   Track,

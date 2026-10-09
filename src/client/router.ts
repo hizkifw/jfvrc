@@ -25,7 +25,7 @@ export interface Route {
 }
 
 export const DEFAULT_ROUTE: Route = {
-  tab: 'resolve',
+  tab: 'library',
   path: [],
   query: '',
   startIndex: 0,
@@ -62,6 +62,9 @@ export function parseHash(hash: string): Route {
   }
   if (segments[0] === 'links') {
     return { tab: 'links', path: [], query: '', startIndex: 0, itemId };
+  }
+  if (segments[0] === 'resolve') {
+    return { ...DEFAULT_ROUTE, tab: 'resolve', itemId };
   }
   return { ...DEFAULT_ROUTE, itemId };
 }
