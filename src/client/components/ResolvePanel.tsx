@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, errorMessage } from '../api';
 import type { ItemDetails } from '../types';
-import { ErrorBanner, Field, Spinner } from './ui';
+import { ErrorBanner, Spinner } from './ui';
 
 export function ResolvePanel({
   onSelect,
@@ -19,7 +19,7 @@ export function ResolvePanel({
     event.preventDefault();
     const value = input.trim();
     if (!value) {
-      setError('Paste a Jellyfin item URL or enter an item id.');
+      setError('Paste a Jellyfin URL or item ID.');
       return;
     }
     setBusy(true);
@@ -37,36 +37,30 @@ export function ResolvePanel({
   }
 
   return (
-    <section className="panel" aria-labelledby="resolve-heading">
-      <h2 id="resolve-heading">Resolve a link</h2>
-      <p className="panel-lead">
-        Paste a Jellyfin movie or episode details URL. The item is validated against the configured
-        server before any link is created.
-      </p>
-      <form onSubmit={handleSubmit} noValidate>
-        <Field
-          label="Jellyfin URL or item id"
-          htmlFor="resolve-input"
-          hint="Example: https://jellyfin.example.com/web/#/details?id=... or a 32-character item id."
-        >
-          <div className="input-row">
-            <input
-              id="resolve-input"
-              type="text"
-              inputMode="url"
-              autoComplete="off"
-              spellCheck={false}
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              disabled={busy}
-              placeholder="https://jellyfin.example.com/web/#/details?id=..."
-              aria-invalid={error ? true : undefined}
-            />
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? <Spinner label="Resolving" /> : 'Resolve'}
-            </button>
-          </div>
-        </Field>
+    <section className="wrap page-pad resolve" aria-labelledby="resolve-heading">
+      <h1 id="resolve-heading">From URL</h1>
+      <p className="lead">Paste a link to any movie or episode.</p>
+      <form className="resolve-form" onSubmit={handleSubmit} noValidate>
+        <label className="sr-only" htmlFor="resolve-input">
+          Jellyfin URL or item ID
+        </label>
+        <div className="input-row">
+          <input
+            id="resolve-input"
+            type="text"
+            inputMode="url"
+            autoComplete="off"
+            spellCheck={false}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            disabled={busy}
+            placeholder="Jellyfin URL or item ID"
+            aria-invalid={error ? true : undefined}
+          />
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            {busy ? <Spinner label="Resolving" /> : 'Continue'}
+          </button>
+        </div>
         {error ? <ErrorBanner message={error} /> : null}
       </form>
     </section>

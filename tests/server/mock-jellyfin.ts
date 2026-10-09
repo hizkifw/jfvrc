@@ -140,6 +140,26 @@ export async function startMockJellyfin(basePath = ''): Promise<MockJellyfin> {
       };
     });
 
+    instance.get(p('/Items/Latest'), async (request) => {
+      const q = request.query as { parentId?: string };
+      if (q.parentId === MOVIES_LIBRARY_ID) {
+        return [{ ...itemPayload(), BackdropImageTags: ['movie-backdrop'], Genres: ['Drama'] }];
+      }
+      if (q.parentId === TV_LIBRARY_ID) {
+        return [
+          {
+            ...episodePayload(),
+            SeriesId: SERIES_ID,
+            ParentBackdropItemId: SERIES_ID,
+            ParentBackdropImageTags: ['series-backdrop'],
+            ParentLogoItemId: SERIES_ID,
+            ParentLogoImageTag: 'series-logo',
+          },
+        ];
+      }
+      return [];
+    });
+
     instance.get(p('/Shows/:seriesId/Seasons'), async (request) => {
       const { seriesId } = request.params as { seriesId: string };
       const items = seriesId === SERIES_ID ? [seasonPayload()] : [];

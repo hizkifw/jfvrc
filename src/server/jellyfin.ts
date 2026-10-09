@@ -1,5 +1,14 @@
 import type { AppConfig, JellyfinConfig } from './config';
-import type { ItemDetails, ItemType, MediaItem, MediaSource, Preset, Track } from '../shared/contracts';
+import type {
+  Artwork,
+  ArtworkRef,
+  ItemDetails,
+  ItemType,
+  MediaItem,
+  MediaSource,
+  Preset,
+  Track,
+} from '../shared/contracts';
 import { badRequest, notFound, unprocessable, upstreamError } from './errors';
 import { apiUrl, canonicalGuid, stripSensitiveParams, validateUpstreamUrl } from './urls';
 
@@ -138,6 +147,8 @@ interface JfItem {
   ProductionYear?: number;
   SeriesName?: string;
   SeriesId?: string;
+  SeasonId?: string;
+  SeasonName?: string;
   IndexNumber?: number;
   ParentIndexNumber?: number;
   ChildCount?: number;
@@ -145,6 +156,15 @@ interface JfItem {
   CollectionType?: string;
   ImageTags?: Record<string, string> | null;
   BackdropImageTags?: string[] | null;
+  ParentBackdropItemId?: string;
+  ParentBackdropImageTags?: string[] | null;
+  ParentLogoItemId?: string;
+  ParentLogoImageTag?: string;
+  ParentThumbItemId?: string;
+  ParentThumbImageTag?: string;
+  Genres?: string[] | null;
+  OfficialRating?: string;
+  CommunityRating?: number;
   Overview?: string;
   RunTimeTicks?: number;
   MediaSources?: JfMediaSource[] | null;
@@ -334,7 +354,34 @@ function mapTrack(stream: JfMediaStream): Track {
   };
 }
 
+/** Own artwork when present, otherwise the parent's (series art for seasons/episodes). */
+function artworkRef(
+  ownId: string,
+  ownTag: string | undefined,
+  parentId: string | undefined,
+  parentTag: string | undefined,
+): ArtworkRef | undefined {
+  if (ownTag) return { itemId: ownId, tag: ownTag };
+  if (parentId && parentTag) return { itemId: String(parentId), tag: parentTag };
+  return undefined;
+}
+
+function mapArtwork(raw: JfItem): Artwork | undefined {
+  const id = String(raw.Id ?? '');
+  const backdrop = artworkRef(
+    id,
+    raw.BackdropImageTags?.[0],
+    raw.ParentBackdropItemId,
+    raw.ParentBackdropImageTags?.[0],
+  );
+  const logo = artworkRef(id, raw.ImageTags?.Logo, raw.ParentLogoItemId, raw.ParentLogoImageTag);
+  const thumb = artworkRef(id, raw.ImageTags?.Thumb, raw.ParentThumbItemId, raw.ParentThumbImageTag);
+  if (!backdrop && !logo && !thumb) return undefined;
+  return { ...(backdrop ? { backdrop } : {}), ...(logo ? { logo } : {}), ...(thumb ? { thumb } : {}) };
+}
+
 export function mapItem(raw: JfItem): ItemDetails {
+  const artwork = mapArtwork(raw);
   const type = mapItemType(raw.Type);
   const item: MediaItem = {
     id: String(raw.Id ?? ''),
@@ -343,6 +390,8 @@ export function mapItem(raw: JfItem): ItemDetails {
     ...(raw.ProductionYear ? { year: raw.ProductionYear } : {}),
     ...(raw.SeriesName ? { seriesName: raw.SeriesName } : {}),
     ...(raw.SeriesId ? { seriesId: String(raw.SeriesId) } : {}),
+    ...(raw.SeasonId ? { seasonId: String(raw.SeasonId) } : {}),
+    ...(raw.SeasonName ? { seasonName: raw.SeasonName } : {}),
     ...(typeof raw.ParentIndexNumber === 'number' ? { seasonNumber: raw.ParentIndexNumber } : {}),
     ...(type === 'Season' && typeof raw.IndexNumber === 'number'
       ? { seasonNumber: raw.IndexNumber }
@@ -362,6 +411,10 @@ export function mapItem(raw: JfItem): ItemDetails {
         ? { childCount: raw.RecursiveItemCount }
         : {}),
     ...(raw.CollectionType ? { collectionType: raw.CollectionType } : {}),
+    ...(artwork ? { artwork } : {}),
+    ...(raw.Genres?.length ? { genres: raw.Genres } : {}),
+    ...(raw.OfficialRating ? { officialRating: raw.OfficialRating } : {}),
+    ...(typeof raw.CommunityRating === 'number' ? { communityRating: raw.CommunityRating } : {}),
   };
   const sources: MediaSource[] = (raw.MediaSources ?? []).map((source, i) => {
     const streams = source.MediaStreams ?? [];
@@ -617,6 +670,7 @@ export class JellyfinClient {
       seasonId,
       startIndex: String(startIndex),
       limit: String(limit),
+      fields: 'Overview',
       enableImages: 'true',
       enableTotalRecordCount: 'true',
     });
@@ -627,6 +681,23 @@ export class JellyfinClient {
     const raw = await this.getJson<JfQueryResult>(url, deviceId);
     const items = (raw.Items ?? []).map((item) => mapItem(item));
     return { items, total: raw.TotalRecordCount ?? items.length };
+  }
+
+  /** Most recently added items of a library, newest first. */
+  async getLatest(parentId: string, limit: number, deviceId?: string): Promise<MediaItem[]> {
+    if (!isValidItemId(parentId)) {
+      throw badRequest('invalid_item_id', 'Item id must be a UUID or 32 character hex string');
+    }
+    const params = new URLSearchParams({
+      userId: this.jellyfin.userId,
+      parentId,
+      limit: String(limit),
+      fields: 'Overview,Genres',
+      enableImages: 'true',
+    });
+    const url = apiUrl(this.jellyfin, `/Items/Latest?${params.toString()}`);
+    const raw = await this.getJson<JfItem[]>(url, deviceId);
+    return (Array.isArray(raw) ? raw : []).map((item) => mapItem(item));
   }
 
   /**

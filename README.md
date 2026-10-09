@@ -100,6 +100,7 @@ Errors are `{ "error": { "code": string, "message": string } }`.
 | `POST` | `/api/resolve` | `{input}` → normalized `ItemDetails`. |
 | `GET` | `/api/library?query=&startIndex=&limit=` | Recursive search across movies/shows/episodes; `{items,total}`. |
 | `GET` | `/api/library/views` | Top-level libraries; `{items}`. |
+| `GET` | `/api/library/latest?parentId=&limit=` | Most recently added items of a library; `{items}`. |
 | `GET` | `/api/library/items?parentId=&startIndex=&limit=` | Direct children of a library/folder; `{items,total}`. |
 | `GET` | `/api/library/shows/:seriesId/seasons` | Seasons of a series; `{items,total}`. |
 | `GET` | `/api/library/shows/:seriesId/seasons/:seasonId/episodes?startIndex=&limit=` | Episodes of a season; `{items,total}`. |

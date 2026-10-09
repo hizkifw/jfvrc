@@ -155,6 +155,33 @@ describe('resolve and library', () => {
     expect(invalid.statusCode).toBe(400);
   });
 
+  it('lists latest additions with artwork that falls back to the parent item', async () => {
+    ctx = await setup();
+    const get = (url: string) =>
+      ctx.built.app.inject({ method: 'GET', url, headers: ctx.auth });
+
+    const movies = await get(`/api/library/latest?parentId=${MOVIES_LIBRARY_ID}`);
+    expect(movies.statusCode).toBe(200);
+    expect(movies.json().items[0]).toMatchObject({
+      type: 'Movie',
+      genres: ['Drama'],
+      artwork: { backdrop: { tag: 'movie-backdrop' } },
+    });
+    expect(movies.json().items[0].artwork.backdrop.itemId).toBe(movies.json().items[0].id);
+
+    const shows = await get(`/api/library/latest?parentId=${TV_LIBRARY_ID}`);
+    expect(shows.json().items[0]).toMatchObject({
+      type: 'Episode',
+      artwork: {
+        backdrop: { itemId: SERIES_ID, tag: 'series-backdrop' },
+        logo: { itemId: SERIES_ID, tag: 'series-logo' },
+      },
+    });
+
+    const missing = await get('/api/library/latest');
+    expect(missing.statusCode).toBe(400);
+  });
+
   it('serves item artwork through the authenticated image route', async () => {
     ctx = await setup();
     const image = await ctx.built.app.inject({

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Icon } from './icons';
+import type { IconName } from './icons';
 
 export function Spinner({ label = 'Loading' }: { label?: string }) {
   return (
@@ -13,7 +15,7 @@ export function Spinner({ label = 'Loading' }: { label?: string }) {
 export function ErrorBanner({
   message,
   onRetry,
-  retryLabel = 'Try again',
+  retryLabel = 'Try Again',
 }: {
   message: string;
   onRetry?: () => void;
@@ -21,6 +23,7 @@ export function ErrorBanner({
 }) {
   return (
     <div className="banner banner-error" role="alert">
+      <Icon name="alert" />
       <span className="banner-text">{message}</span>
       {onRetry ? (
         <button type="button" className="btn btn-small" onClick={onRetry}>
@@ -31,16 +34,35 @@ export function ErrorBanner({
   );
 }
 
-export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
+export function EmptyState({
+  title,
+  icon = 'film',
+  children,
+}: {
+  title: string;
+  icon?: IconName;
+  children?: ReactNode;
+}) {
   return (
     <div className="empty">
+      <span className="empty-icon">
+        <Icon name={icon} size={22} />
+      </span>
       <p className="empty-title">{title}</p>
       {children ? <p className="empty-body">{children}</p> : null}
     </div>
   );
 }
 
-export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
+export function CopyButton({
+  value,
+  label = 'Copy',
+  className = 'btn btn-small',
+}: {
+  value: string;
+  label?: string;
+  className?: string;
+}) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const timer = useRef<number | undefined>(undefined);
 
@@ -66,8 +88,11 @@ export function CopyButton({ value, label = 'Copy' }: { value: string; label?: s
   }
 
   return (
-    <button type="button" className="btn btn-small" onClick={() => void copy()}>
-      {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : label}
+    <button type="button" className={className} onClick={() => void copy()}>
+      <Icon name={state === 'copied' ? 'check' : state === 'failed' ? 'alert' : 'copy'} size={16} />
+      <span aria-live="polite">
+        {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy Failed' : label}
+      </span>
     </button>
   );
 }

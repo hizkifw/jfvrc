@@ -32,6 +32,22 @@ export interface MediaSource {
   subtitleTracks: Track[];
 }
 
+/** One piece of Jellyfin artwork. It may belong to a parent (e.g. an episode's series). */
+export interface ArtworkRef {
+  itemId: string;
+  tag: string;
+}
+
+/** Wide artwork beyond the primary image, falling back to the parent item's. */
+export interface Artwork {
+  /** Full-bleed background image. */
+  backdrop?: ArtworkRef;
+  /** Transparent title treatment. */
+  logo?: ArtworkRef;
+  /** Landscape (16:9) key art, usually with the title baked in. */
+  thumb?: ArtworkRef;
+}
+
 export interface MediaItem {
   id: string;
   name: string;
@@ -39,6 +55,9 @@ export interface MediaItem {
   year?: number;
   seriesName?: string;
   seriesId?: string;
+  /** Season an episode belongs to. */
+  seasonId?: string;
+  seasonName?: string;
   seasonNumber?: number;
   episodeNumber?: number;
   overview?: string;
@@ -51,6 +70,12 @@ export interface MediaItem {
   childCount?: number;
   /** Jellyfin collection type for library views (e.g. "movies", "tvshows"). */
   collectionType?: string;
+  artwork?: Artwork;
+  genres?: string[];
+  /** Content rating such as "PG-13" or "TV-14". */
+  officialRating?: string;
+  /** Community score out of 10. */
+  communityRating?: number;
 }
 
 export interface ItemDetails extends MediaItem {

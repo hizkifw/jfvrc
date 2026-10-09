@@ -5,7 +5,6 @@ import type {
   ItemDetails,
   LibraryResponse,
   LinkSummary,
-  MediaItem,
   StatusResponse,
   ViewsResponse,
 } from './types';
@@ -78,17 +77,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     response = await fetch(path, { ...init, headers });
   } catch {
-    throw new ApiError('network_error', 'Could not reach the server. Check your connection.', 0);
+    throw new ApiError('network_error', "Can't reach the server. Check your connection.", 0);
   }
 
   if (response.status === 401) {
     onUnauthorized?.();
-    throw new ApiError('unauthorized', 'Your admin token was rejected. Enter it again.', 401);
+    throw new ApiError('unauthorized', "That token didn't work. Try again.", 401);
   }
 
   if (!response.ok) {
     let code = 'http_error';
-    let message = `Request failed (HTTP ${response.status}).`;
+    let message = `Something went wrong (${response.status}). Try again.`;
     try {
       const body = (await response.json()) as Partial<ApiErrorBody>;
       if (body?.error?.code) code = body.error.code;
@@ -145,6 +144,11 @@ export const api = {
       limit: String(limit),
     });
     return request(`/api/library/items?${params.toString()}`);
+  },
+
+  libraryLatest(parentId: string, limit: number): Promise<ViewsResponse> {
+    const params = new URLSearchParams({ parentId, limit: String(limit) });
+    return request(`/api/library/latest?${params.toString()}`);
   },
 
   librarySeasons(seriesId: string): Promise<LibraryResponse> {
@@ -212,11 +216,11 @@ export async function fetchImage(path: string): Promise<Blob> {
   try {
     response = await fetch(path, { headers });
   } catch {
-    throw new ApiError('network_error', 'Could not reach the server. Check your connection.', 0);
+    throw new ApiError('network_error', "Can't reach the server. Check your connection.", 0);
   }
   if (response.status === 401) {
     onUnauthorized?.();
-    throw new ApiError('unauthorized', 'Your admin token was rejected. Enter it again.', 401);
+    throw new ApiError('unauthorized', "That token didn't work. Try again.", 401);
   }
   if (!response.ok) {
     throw new ApiError('image_error', `Image request failed (HTTP ${response.status}).`, response.status);
@@ -228,19 +232,4 @@ export function errorMessage(error: unknown): string {
   if (isApiError(error)) return error.message;
   if (error instanceof Error) return error.message;
   return 'Something went wrong.';
-}
-
-export function itemLabel(item: MediaItem): string {
-  const parts: string[] = [];
-  if (item.type === 'Episode') {
-    const series = item.seriesName ?? 'Unknown series';
-    const season = item.seasonNumber !== undefined ? `S${item.seasonNumber}` : 'S?';
-    const episode = item.episodeNumber !== undefined ? `E${item.episodeNumber}` : 'E?';
-    parts.push(`${series} · ${season}${episode}`);
-    if (item.name) parts.push(item.name);
-  } else {
-    parts.push(item.name);
-  }
-  if (item.year) parts.push(`(${item.year})`);
-  return parts.join(' · ');
 }
